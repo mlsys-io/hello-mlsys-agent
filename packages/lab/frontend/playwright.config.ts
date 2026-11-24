@@ -15,7 +15,7 @@ export default defineConfig({
     screenshot: 'only-on-failure',
   },
   webServer: {
-    command: `../.venv/bin/python -m mlab web ../.test-runs/browser-${process.pid}-${Date.now()} --agent fake --simulator fixture --no-browser --no-opening --port 8877`,
+    command: `../scripts/lab-python -m mlab web ../.test-runs/browser-${process.pid}-${Date.now()} --agent fake --simulator fixture --no-browser --no-opening --port 8877`,
     url: 'http://127.0.0.1:8877/api/course',
     reuseExistingServer: false,
     timeout: 20_000,

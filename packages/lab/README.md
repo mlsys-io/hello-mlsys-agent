@@ -24,11 +24,12 @@ The default `mlsys` backend runs the in-tree MLSys Simulator (`packages/simulato
 
 ## Environment
 
-Linux, Python 3.12, [uv](https://docs.astral.sh/uv/) and Node.js/npm (for the pinned Claude Code):
+On Linux with [uv](https://docs.astral.sh/uv/) and Node.js/npm, run these commands from the root of your checkout.
+Setup selects Python 3.12 and installs the pinned Claude Code.
 
 ```bash
 scripts/setup.sh
-source .venv/bin/activate        # in hello-mlsys-agent: the .venv at the repository root
+source .venv/bin/activate
 mlab doctor
 ```
 
@@ -121,13 +122,15 @@ The React workbench is included as built static assets. Developers rebuild it wi
 
 ## Offline checks
 
+Run these commands from the lab directory (`packages/lab` in the merged repository).
+
 ```bash
 mlab demo --out workspaces/my-first-demo                     # scripted student, fixture numbers
 mlab demo --simulator mlsys --out workspaces/demo-simulated  # the same walk on the in-tree simulator
-.venv/bin/python -m pytest -q tests
+scripts/verify-cli.sh
 ```
 
-Tests that execute the real pinned Claude Code against a local fake model are opt-in (`MLAB_RUN_CLAUDE_TESTS=1`).
+Use `scripts/verify-cli.sh --with-claude` to include tests that run the pinned Claude Code against a local fake model.
 `scripts/e2e/fresh-student.mjs` walks the course page as a new student with the real configured models (a question, a simulated experiment, a teacher question, a sandbox measurement), approving the cards in the browser; see its header for setup.
 Passing offline tests does not establish the quality or availability of the real model.
 

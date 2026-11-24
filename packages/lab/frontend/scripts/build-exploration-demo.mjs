@@ -225,7 +225,7 @@ const markdown = `# Exploration video demo\n\nOpen [the chapter player](index.ht
 await writeFile(path.join(output, 'README.md'), markdown);
 if (process.argv.includes('--zip')) {
   execFileSync(
-    path.join(project, '.venv/bin/python'),
+    path.join(project, 'scripts/lab-python'),
     [
       '-c',
       [

@@ -1,7 +1,7 @@
 """Opt-in: the template's ask rules hold in the pinned Claude Code, including variant and compound forms."""
 import json
 import os
-import shutil
+import shlex
 import subprocess
 import sys
 import pytest
@@ -28,7 +28,7 @@ def test_gated_commands_need_the_student_in_every_form(workspace_path):
         (workspace / ".claude/settings.json").write_text(json.dumps({"permissions": {**template["permissions"],
                                                                                     "allow": template["permissions"]["allow"] + ["Bash(cd *)"]}}))
         marker = workspace_path / "ran.txt"
-        (bin_dir / "mlab").write_text(f'#!/bin/sh\necho "$@" >> {marker}\necho "{{}}"\n')
+        (bin_dir / "mlab").write_text(f'#!/bin/sh\necho "$@" >> {shlex.quote(str(marker))}\necho "{{}}"\n')
         (bin_dir / "mlab").chmod(0o755)
         env = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC_", "CLAUDE_CODE_")) and k != "CLAUDECODE"}
         env.update(model.environment(trusted_home(workspace_path / "home", workspace)), PATH=f"{bin_dir}:{env['PATH']}")

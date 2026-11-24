@@ -1,0 +1,241 @@
+# LLM 推理系统模拟器
+
+[English](README.md) · [Python API](docs/api.md) · [校准](docs/calibration.md) ·
+[验证规范](docs/validation-protocol.md) · [系统规范](docs/specification.md) · [PP 与 CPU swap](docs/pipeline-and-swap.md) · [Prefix Cache 与分块预填充](docs/prefix-cache-and-chunking.md) · [混合批处理](docs/mixed-batching.md) · [多副本路由](docs/multi-replica.md) · [ROCm 采集](docs/rocm-collection.md) · [Qwen3 与 vLLM 内部 hook](docs/qwen3-and-vllm-hooks.md) · [原生 PP 采样与 Profile](docs/native-pp-capture.md) · [原生 PP 通信微基准与校准](docs/native-pp-communication.md) · [量化存储](docs/quantization.md) · [Workspace 与容量验证](docs/workspace-and-capacity.md)
+
+1.24 版增加[EngineCore整步成本后端](docs/runtime-core-costs.md)：显式 `backend="runtime"`、独立计时边界、每阶段／精确batch的非负仿射模型，以及固定准备和quiet原生采集。原始证明、稳定性拒绝和完整运行域保持可追溯，不自动授予硬件精度。保留[固定开销与Attention成本校准](docs/runtime-cost-calibration.md)、[Agent 专用同步接口](docs/agent-integration.md)、[本地 Web 实验台](docs/web-interface.md)、[冻结预测与独立闭环验证](docs/closed-loop-validation.md)、[联合约束筛选与课程η/β导入](docs/course-constraints-and-calibration.md)、量化存储、TP/PP、缓存、分块、混批、CPU swap、多副本与已有采集工具。源码见[GitHub](https://github.com/eyuansu62/mlsys-simulator)，许可证仍待选择，尚未发布PyPI。
+
+按[课程工作流](docs/course-workflows.md)的六条命令可直接生成图文报告、CSV与SVG。52节点32B/7B示例明确为冻结的人工教学轨迹，硬件参数为声明假设；负载边界是有限网格的观测结果，保留全部seed、失败和非单调情况，不建立新的真机精度结论。
+
+新的[Qwen3-4B在线整步成本实测](docs/qwen4b-online-20261117/README.md)保留测前冻结的54组独立验证、27,648请求及全部校准拒绝和中断尝试。严格精度结论为 **FAIL**：53/54格满足全部误差门槛，唯一短输入C2重复的TTFT P99误差30.59%，超过25%；吞吐最大误差5.04%，54格SLA判定全部一致。没有用留出数据修改系数或阈值。这里校准的是模拟器的耗时系数，Qwen仅执行推理。
+
+较早的[9070XT/Qwen3-4B课程实测](docs/course-sla-9070xt-20261111/README.md)完成39个fresh Runtime、39,000请求和短／长输入留出。采集完整性通过，预注册精度目标未通过：预测安全cap16，基线三次均满足SLA的最大已观测点为4。报告保留全部阴性结果，未回拟合或挑重复。
+
+[11-16域差异诊断与历史冻结材料](docs/decode-cost-domain-gap-20261116/README.md)保留原HEAD `a075347` 的CPU分析和27×1000请求本地计划；该GPU合同未执行，仍为`REMOTE_PENDING`，后续54格不能算作其完成。原baseline C1/2/4是重测，short/long低并发只相对旧分布留出新增，当前也已有后续观测。可移植CPU工具要求新输出目录和study ID，保存完整payload；不覆盖历史承诺，也不修改默认β。
+
+单卡和TP2已完成完整训练及冻结后独立验证；1.14的PP2也完成闭环，每个cohort各48条记录/48条rank观测、16种stage精确形状，覆盖率100%、字节误差0、低估0。结论仅限实际采样配置和保留形状，详见[Worker Workspace 验证记录](docs/workspace-stage-validation.md)。
+
+新完成的[Prefill稳态真机报告](docs/prefill-state-20261117/README.md)包含CPU/HIP/GPU时间线、固定逐形状暖机与主线程亲和性对照。重新冻结后，3个新进程的33/33格均在10%误差内；Prefill平均1.05%、最大3.56%，结论限于报告声明的准备条件。
+
+新的 `runtime` 后端通过 `profile_path` 显式选择实际artifact，目标为
+`engine_core_step_wall_v1`，不把旧0.6B窄域Profile或4B的39格失败记录改名覆盖。
+默认Web和Agent仍使用原有声明；软件支持不等于新AMD训练／forward已通过。
+Python拟合、普通CLI与逐phase预测、完整内存／Runtime绑定及未知域拒绝规则见
+[EngineCore整步成本说明](docs/runtime-core-costs.md)。核心无新增运行依赖。
+
+## 安装和运行
+
+第一次使用可以从[中文实验教程](docs/tutorial.zh-CN.md)开始，跟着做一次配置、运行、对照和结果分析。
+
+需要 Python 3.11 或更新版本。核心没有必需第三方运行依赖，JSON/TOML 使用标准库；已安装 PyYAML 时可读 YAML。
+实际 stage 采集另需 AMD 机器上已安装的 ROCm PyTorch 和 Runtime Adapter；CPU 模拟与 fixture 验证不会安装 GPU 软件或退回 CPU 冒充 GPU 计时。
+
+```bash
+python -m pip install .
+mlsys-sim simulate --experiment examples/fifo.json --out runs/fifo
+mlsys-sim simulate --experiment examples/memory_pressure.json --out runs/memory
+mlsys-sim simulate --experiment examples/tp2.json --out runs/tp2
+mlsys-sim predict --experiment examples/pp2_analytical.json --out runs/pp2
+```
+
+也可使用 `python -m mlsys_sim`，或保留的 `simulate.py`／`predict.py` 源码入口。每次运行必须使用新的输出目录，已有结果不会覆盖。
+
+### 本地 Web 界面
+
+安装后运行 `mlsys-sim-web`（或源码中 `python -m mlsys_sim.web`），浏览器打开
+`http://127.0.0.1:8765`。在表单中配置 Qwen3/自定义模型、单卡硬件、权重/激活/KV Cache
+精度和请求负载，
+运行后直接查看延迟、输出吞吐、显存预算与 KV 使用图表，并导出可重放配置和结果。
+精度字段支持 BF16/FP8/INT8/INT4、课程有效字节口径和显式反量化模式；只建模存储与反量化开销，
+不建模 PPL 或量化误差。
+界面复用 CPU 解析引擎，无新增运行依赖；使用范围与图表口径见[Web 实验台](docs/web-interface.md)。
+
+### 课程 Agent 接口
+
+`mlsys-sim-agent` 或 `python -m mlsys_sim.agent_service` 启动独立的本地8877端口服务，
+提供 `GET /v1/catalog` 和 `POST /v1/simulate`。接收固定原始负载，支持顺序与DAG因果释放；
+目录未确认的模型/硬件/精度不会被猜测或替换。详见[接口说明与联调样例](docs/agent-integration.md)。
+
+| 示例 | 用途 |
+| --- | --- |
+| `fifo.json` | 三请求手算时间线 |
+| `memory_pressure.json` | 小 KV pool 触发请求级抢占和重算 |
+| `tp2.json` | 双 rank 分片、通信和在线调度 |
+| `pp2_analytical.json` | 不等长 PP stage 的容量和孤立前向时间分析 |
+
+## PP 与 CPU swap 示例
+
+```bash
+mlsys-sim simulate --experiment examples/v1_1/pp_golden.json --out runs/pp-golden
+mlsys-sim simulate --experiment examples/v1_1/cpu_swap.json --out runs/cpu-swap
+mlsys-sim simulate --experiment examples/v1_1/pp_cpu_swap.json --out runs/pp-cpu-swap
+```
+
+PP 以 stage／microbatch 独立推进，同一请求必须等上一迭代的采样反馈后再进入下一 Decode。CPU swap 模拟有限主机 KV pool 和 D2H／H2D 搬运，恢复时不重算历史 KV。PP 手算例显式关闭 P2P，用于理想流水线对照。这些机制都在 CPU 上计时和记账，不执行真实设备传输，详见 [PP 与 CPU swap](docs/pipeline-and-swap.md)。
+
+## Prefix Cache 与 Chunked Prefill 示例
+
+```bash
+mlsys-sim simulate --experiment examples/v1_2/prefix_cache.json --out runs/prefix-cache
+mlsys-sim simulate --experiment examples/v1_2/chunked_prefill.json --out runs/chunked-prefill
+mlsys-sim simulate --experiment examples/v1_2/pp_prefix_chunk.json --out runs/pp-prefix-chunk
+```
+
+Prefix Cache 使用显式 `prompt_token_ids`、namespace 和完整 token 前缀匹配不可变 KV block；缺少 token ID 时绕过缓存，不按输入长度猜命中。缓存与请求共用固定显存池，无人引用的 block 按 LRU 淘汰，正在使用的 block 不提前释放。Chunked Prefill 保留前缀上下文、分次计算输入，只在最后一块完成后输出首 Token；连续批处理在启用分块时优先调度 Decode，未开启混合策略时各批保持同一 phase。完整配置、PP／swap 组合和计时边界见[专门说明](docs/prefix-cache-and-chunking.md)。
+
+## 量化存储（FP8 / FP4 / INT8 / INT4）
+
+权重与 KV 按**声明的有效字节宽度**建模：`weight_bytes`／`kv_bytes`／`activation_bytes` 接受任意 ≤8 的正值，块/比例元数据需自行折算进有效宽度（如 GPTQ-128 为 0.515625、NVFP4 为 0.5625、MXFP4 为 0.53125），存储计算向上取整、2 字节域结果与原实现完全一致。`weight_dequant` 可选 `none`／`fused`（流量不变，反量化计入 GEMM FLOPs）／`materialized`（独立展开通道，流量为 params × (weight_bytes + 2×activation_bytes)，每层多一次 launch）；KV 反量化按每元素 `calibration.dequant_flops_per_weight`（默认 1.0）FLOPs 在线融合进注意力。dtype 标签必须与字节宽度一致。该能力只做解析/合成建模，不建模量化精度；Profile 身份包含 `weight_dequant`，量化配置不会静默复用非量化 Profile，旧 Profile 文件照常加载。格式推导、配置示例与边界见[量化存储](docs/quantization.md)。
+
+## Prefill/Decode 混合批处理
+
+```bash
+mlsys-sim simulate --experiment examples/v1_3/mixed_batching.json --out runs/mixed-batching
+mlsys-sim simulate --experiment examples/v1_3/pp_mixed_cache_swap.json --out runs/pp-mixed-cache-swap
+```
+
+`strategy.mixed_batching=true` 将就绪 Decode 优先放入批次，再用剩余 Token 预算加入 Prefill，两类工作共用一次 stage 执行。分块是独立开关；未启用分块时，完整剩余 prompt 能放入才会加入。FIFO 仍独占一个请求。PP 保留逐成员进度与反馈依赖，Prefix Cache／CPU swap 的安全引用规则不变。
+
+Synthetic 混合批次使用独立的 `calibration.mixed_ms`。Profile 必须提供包含 `request_phases` 的精确混合形状，不能通过相加／取最大纯阶段耗时补齐缺失数据。配置、形状和计时约定见[混合批处理说明](docs/mixed-batching.md)。
+
+## 多副本调度与负载均衡
+
+```bash
+mlsys-sim simulate --experiment examples/v1_4/round_robin.json --out runs/round-robin
+mlsys-sim simulate --experiment examples/v1_4/prefix_aware.json --out runs/prefix-aware
+mlsys-sim simulate --experiment examples/v1_4/replicas_pp_mixed_cache_swap.json --out runs/replicas-pp-mixed-cache-swap
+```
+
+`strategy.replicas` 配置独立模型副本，设备按副本／PP stage／TP rank 排列。`replica_routing` 支持轮询、最小未完成负载和最小负载内的缓存亲和选择。路由只使用到达时可见状态，不读取未来输出长度；请求选定副本后保持绑定。各副本独立计 KV、缓存、Host swap 容量和 DMA，时钟、测量窗口和执行预算则是全局一份。Profile 后端通过 `replica_profile_paths` 为每个副本提供严格匹配的 Profile，见[多副本说明](docs/multi-replica.md)。
+
+## 校准与验证闭环
+
+下面的数据是**手算测试 fixture，不是实测**。显式允许 fixture 后，所有派生 Profile 和报告仍保留 fixture 来源，不会转成实测证据。
+
+```bash
+mlsys-sim calibrate --dataset examples/v1/step_measurements.fixture.json \
+  --profile-version fixture-v1 --out runs/calibration --allow-test-fixture
+mlsys-sim simulate --experiment examples/v1/profile_serving.json \
+  --out runs/profile-serving
+mlsys-sim compare --predicted runs/profile-serving \
+  --observed examples/v1/online_observation.fixture.json \
+  --out runs/compare --allow-test-fixture
+mlsys-sim validate --dataset examples/v1/step_measurements.fixture.json \
+  --profile-version holdout-v1 --holdout-group prefill-16 \
+  --out runs/holdout --allow-test-fixture
+```
+
+`profile_serving.json` 引用首个命令生成的 `profile.json`，并在配置中允许 fixture。校准按精确形状汇总重复观测；留出按配置／分组连通分量切分；在线比较使用独立的观测运行契约。实测接入方法见[校准文档](docs/calibration.md)和[验证规范](docs/validation-protocol.md)。
+
+## 真机采集与证据验收
+
+```bash
+mlsys-sim collect --kind probe --out runs/rocm-probe
+mlsys-sim validate-hardware --plan examples/v1_5/fixture-validation.plan.json \
+  --out runs/acceptance-fixture --allow-test-fixture
+```
+
+Probe 会报告硬件可用性及版本证据。上面的验收示例全部为手算 fixture，必须保留 `hardware_validated=false`。实际 stage 采集计量同步后的 Runtime 调用；RCCL AllReduce 检查计时与正确性；在线采集保留服务端 Token-ready 与客户端 SSE 到达两种边界。验收报告分别给出 `PASS`、`FAIL`、`INSUFFICIENT_EVIDENCE` 或 `TEST_FIXTURE_ONLY`，命令执行完成本身不等于真机验收通过。完整计划、来源约束和参考数据缺口见[ROCm 采集说明](docs/rocm-collection.md)。
+
+## Qwen3 模型导入与组合示例
+
+```bash
+mlsys-sim import-model --kind qwen3 --config examples/v1_6/qwen3-4b.hf.json \
+  --name Qwen3-4B --revision 1cfa9a7208912126459214e8b04321603b3df60c --out runs/qwen3-model
+mlsys-sim predict --experiment examples/v1_6/qwen3-4b-predict.json --out runs/qwen3-predict
+mlsys-sim simulate --experiment examples/v1_6/qwen3-r2-tp2-pp2.json --out runs/qwen3-combined
+```
+
+Qwen3-4B 的 residual hidden width=2560，query projection width=32×128=4096，保持真实维度。权重和性能模型补充 tied embeddings、Q/K Norm 与最终 RMSNorm；同一物理 rank 的词表权重去重，PP 两端位于不同设备时各有副本。组合示例使用 synthetic 时间，实际触发 R2×TP2×PP2、缓存、混合批处理和 CPU swap，不加载模型权重或证明真机吞吐。配置指纹与内部采集边界见[专门说明](docs/qwen3-and-vllm-hooks.md)。
+
+## vLLM 原生 PP 延迟接收与切片传输
+
+```bash
+mlsys-sim simulate --experiment examples/v1_7/qwen3-native-r2-tp2-pp2.json \
+  --out runs/qwen3-native-combined
+```
+
+`strategy.pipeline_transport="vllm_native"` 显式使用 Qwen3 的 `hidden_states`／`residual` 双张量、按张量判断的 TP 切片 P2P 与接收端 AllGather。固定 MRv1 版本的 hook 只观察实际自然触发的接收，不提前读取 lazy tensor 或消费输出；阶段 Profile 扣除接收等待及其 AllGather，仍计输入拷贝与计算。Profile 保留实际 padding／张量描述并只允许精确查找；边界传输单独计费一次，可显式选择通信 Profile，未选择时沿用解析模型。接收端完整驻留 Buffer 不随 wire slice 除以 TP。示例仍是 CPU 上的 synthetic stage 模拟，实机采集、校准方法与支持边界见[原生 PP 文档](docs/native-pp-capture.md)。
+
+## 独立校准原生 PP 通信
+
+通信采集使用单向 src send／dst receive 和接收端 TP AllGather，预分配缓冲区，按物理位置、dtype 与实际软件栈分别校准。它需要已安装 HIP PyTorch／RCCL 的真机，不增加 CPU 核心的必需 GPU 依赖。显式选中的通信 Profile 替代原生边界解析估计，不改阶段 Profile identity，也不重复计局部模型 collective；缺少 primitive、位置或字节覆盖会明确失败。未选择通信 Profile 时保留原解析路径。采集、直接仿射拟合、独立留出验证和仅用于软件验证的 fixture 示例见[通信校准文档](docs/native-pp-communication.md)。
+
+```bash
+mlsys-sim simulate --experiment examples/v1_8/native-pp-serving.fixture.json \
+  --out runs/native-comm-fixture-serving
+```
+
+此示例使用手算通信 Profile 和 synthetic 阶段耗时，保留 fixture 来源，不代表真机测量。
+
+显式使用 `calibrate --native-pp-communication --native-pp-model size-lookup` 可按消息尺寸拟合全部重复观测的均值，保留非单调拐点，拒绝跨跳变／稀疏区间及外推；旧 affine 仍为默认。留出同时报告逐次误差、逐尺寸均值误差和拒绝覆盖率，详见[小消息校准](docs/native-pp-communication.md)。
+
+采样计划可显式选择 `native_pp_primitives_v3`，在子进程中将两个 P2P LL 阈值设为0，遇冲突配置拒绝启动；它不改变原始完成同步计时，也不自动升级旧 Profile。实际 Runtime 采用新策略时，应在启动前设置同样阈值并重新校准匹配的 Profile。
+
+## Workspace 归因与容量／OOM 验证
+
+Workspace 校准只接收完整的 Runtime-owned allocation ledger：按实际底层 storage 去重 alias，等释放完成才扣除占用，逐 rank 区分真实零和未知。独立 Workspace Profile 只替换动态 Workspace 预算，不改变阶段耗时或重复计固定储备；显式选择后按精确形状查询，不插值、不解析回退。默认 vLLM WorkspaceManager 观察器只提供部分 managed scratch 信息，不能自动代表所有 temporary Workspace。
+
+可选的 `scripts/rocm_workspace_audit/workspace_stage_session.py` 通过真实 GPUWorker 边界采集 single／TP2／PP2，每个 prompt 自然生成四个 Token，保留逐 iteration 的实际 phase、query 和 context。正式网格为 Prefill16／32 及 Decode context16–18／32–34；三次重复时每 rank 有24行。当前原始采集只限 BF16、同步 eager MRv1、单 active sequence、固定256MiB KV、无 cache／chunk／mixed／swap。采集进程正常退出不等于完整归因；只有所有原生、Torch、PP 生命周期和身份门禁闭合，才允许校准。强插桩的阶段耗时仅作诊断，不用于新的时延 Profile。
+
+冻结训练 Profile 后，使用 `validate --workspace-repeats --training-dataset fit/dataset.json --profile ... --dataset ...` 检查新采集的逐 rank 覆盖和低估。训练 canonical SHA、实际采集 session／capture／record／group 必须独立；它不拟合重复数据，也不自动授予硬件 PASS。已有缓存、swap、混批和多副本的兼容性由 CPU 组合回归检查，不能把本采集域的 Profile 复用到未测身份或形状。详见[Worker 采集与重复验证](docs/workspace-and-capacity.md#collect-worker-level-prefill-and-decode)。
+
+容量扫描为每个候选点和重复实验建立全新 Runtime／进程，区分 typed device OOM、逻辑 KV 准入拒绝、超时及其他错误，并与整个有效配置的模拟结果比较。报告只给有证据的相邻成功→OOM 区间和分辨率；不稳定、非单调或删失结果不能推成一个精确通用阈值。适配器集成契约、fixture 示例和证据边界见[专门说明](docs/workspace-and-capacity.md)。
+
+```bash
+mlsys-sim predict --experiment examples/v1_9/native-pp-workspace.fixture.json \
+  --out runs/workspace-fixture-predict
+```
+
+示例联合使用手算 Workspace／通信 Profile 和 synthetic 阶段耗时，不代表真机测量。
+
+## Python 库接口
+
+```python
+from mlsys_sim import CalibrationSpec, Experiment, RequestSpec, simulate
+
+experiment = Experiment(
+    workload=(RequestSpec("r1", arrival_ms=0, input_tokens=16, output_tokens=4),),
+    calibration=CalibrationSpec(backend="synthetic"),
+)
+run = simulate(experiment)
+print(run.result["counts"])
+```
+
+`load_experiment(path)` 加载配置，`experiment_from_dict(mapping)` 校验内联配置；`predict_experiment(experiment)` 分析形状、显存和通信，不模拟排队。校准／留出／比较同样提供 Python API，见 [API 文档](docs/api.md)。
+
+## 机制与模型边界
+
+每个副本的在线引擎支持单卡、同步 TP group 和多个 TP group 组成的 PP 流水线；多个副本在同一全局事件时间线上独立推进。单组 FIFO 独占一个请求直至结束；Continuous Batching 在安全边界重选工作。PP 默认每个 microbatch 只有一个 phase；开启混合策略后，可在同一 microbatch 中放入 Prefill 和 Decode。不同 stage 可以推进不同 microbatch，这仍是声明了简化条件的调度器。
+
+首次 Prefill 构建输入 KV，最终输入块完成后生成首 Token；最新采样 Token 的 KV 在下一 Decode 才计算。已输出数量和已计算 KV 位置分别记录。每步先检查物理预算和逻辑 KV，再跨 rank 原子预留；PP 在进入 stage 0 前为整个流水线预留 KV，并另计常驻激活 Buffer。压力下限制准入／缩 Batch，必要时在安全边界按配置重算恢复或经 CPU swap 保存／恢复 KV；历史输出不重复生成，停顿计入延迟。PP 回收先排空在途 wave，DMA 期间不启动新的 GPU 工作。
+
+固定 KV pool 释放逻辑 block 不会缩小 GPU 预分配 tensor。显式 Workspace Profile 逐 rank 精确替换动态预算，缺形状不回退；未选择时仍使用阶段 Profile 中的受支持观测或明确标记的解析假设。张量分配器碎片和 Kernel 周期不做细粒度模拟。
+
+性能后端分为 `synthetic`、`analytical` 和 `profile`。Profile 严格核对模型、设备、软件版本、并行布局与计时边界；ragged 形状只精确匹配，同质 Batch 仅在所需角点齐全时插值。混合形状还按有序成员 phase 精确匹配；原生 PP Profile 也只允许精确形状，并保留实际 padding／传输描述，二者均不做插值或外推。其它形状越界默认拒绝，显式外推会记录来源。Profile 的整 stage 时间已包含局部 collective，不重复加通信。
+
+Warmup 使用独立时间线，不进入测量指标，也不把 KV 留给测量。当前仅支持 `empty_cache` 初始状态。测量到达窗口为半开区间，窗外请求为 `NOT_ADMITTED`；是否 drain 及最大 drain 时间显式配置。
+
+PP 在线模拟已支持 stage 队列、P2P 和反馈依赖；`predict` 仍是未分块、无缓存的形状分析，不执行在线混合调度或输出在线 SLA。NVMe swap 仍未实现；量化存储按声明的有效字节宽度建模（仅解析/合成，不建模精度）。混合 stage 使用共享权重与通信的解析假设或精确 Profile，不执行真实 GPU Kernel。软件功能不等于真实硬件验证完成，具体见[能力矩阵](docs/coverage-matrix.md)。
+
+## 指标和输出
+
+输出包括 `manifest.json`、`result.json`、`requests.jsonl`、可选 `events.jsonl` 和日志。Prefix／分块运行另报缓存占用、命中和实际输入计算量。PP 结果补充各 stage 忙时／空泡和在途进度，swap 结果补充主机占用、DMA 状态及逐请求搬运次数／字节／耗时。多副本结果补充逐请求路由和各副本资源诊断，并在统一窗口重算全局指标。Manifest 保存展开配置、代码／输入哈希、各副本 Profile 快照／来源及比较契约；校准和验证报告保存数据来源、训练／留出成员及覆盖域。
+
+`TTFT = first_token - arrival`。正常完成且输出至少两个 Token 时，`TPOT = (last_token-first_token)/(outputs-1)`；单 Token 的 TPOT 为 null。ITL 包括抢占与重算停顿，恢复不重置首 Token 时刻。完成率保留已准入请求中的失败、超时和未完成项，排除窗外未准入请求。
+
+Goodput 只计完成且满足全部已声明 SLA 的请求。要求 TPOT SLA 时，TPOT 不适用的请求不算达标。分位数采用排序后 `(n-1) × q` 位置的线性插值。命令执行完成不代表请求全部成功、覆盖率完整或 SLA 达标。
+
+## 开发
+
+```bash
+python -m pip install -e .
+python -m pip install -r requirements-dev.txt
+python -m unittest discover -s tests -v
+ruff check .
+mypy --check-untyped-defs --ignore-missing-imports mlsys_sim
+python -m build
+twine check dist/*
+```
+
+实际检查结果以验证报告和 CI 运行记录为准。正式发布前仍需选择许可证；PyPI 发布是独立步骤，见[发布清单](docs/releasing.md)。

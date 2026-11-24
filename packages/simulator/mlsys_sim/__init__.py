@@ -1,0 +1,221 @@
+"""Public API for deterministic LLM simulation and optional ROCm collection.
+
+Construct an :class:`Experiment` directly or load a configuration with
+:func:`load_experiment`, then call :func:`simulate` or :func:`predict_experiment`.
+Changes to this import surface and the versioned data contracts are recorded
+in the changelog. Calibration provenance and hardware validation are separate.
+"""
+
+__version__ = "1.24.0"
+
+from .config import experiment_from_dict, load_experiment, validate_experiment
+from .engine import SimulationResult, simulate
+from .memory import MemoryDecision, MemoryPlanner
+from .layout import replica_experiment
+from .performance import AnalyticalModel, predict_experiment, ring_allreduce_ms
+from .schema import (
+    CalibrationSpec,
+    AnalyticalCostSpec,
+    DeviceSpec,
+    EvaluationSpec,
+    ExecutionSpec,
+    Experiment,
+    InfraSpec,
+    MemoryConfig,
+    ModelSpec,
+    RequestSpec,
+    SimulationError,
+    StepEstimate,
+    StrategySpec,
+)
+from .profiles import (ProfileModel, create_performance_model, estimate_profile,
+                       load_dataset, load_profile, profile_identity)
+from .short_prefill import fit_short_prefill
+from .runtime_cost import (RuntimeCostModel, fit_runtime_costs, freeze_runtime_cost_policy,
+                           load_runtime_cost, runtime_cost_domain, validate_runtime_cost_model)
+from .calibration import (calibrate_dataset, split_dataset, validate_holdout, validate_profile_repeats,
+                          write_json_exclusive)
+from .comparison import (compare_candidates, compare_runs, comparison_contract,
+                         extract_metrics)
+from .communication_calibration import calibrate_communication, load_communication_dataset
+from .swap import HostSwapManager, SwapTransfer
+from .hardware import CollectionError, bind_inventory, probe_rocm
+from .rocm_steps import collect_steps
+from .rccl_adapter import collect_rccl, parse_rccl_output
+from .runtime_adapter import RuntimeTraceRecorder, collect_vllm, normalize_runtime_trace
+from .hardware_validation import run_hardware_validation
+from .release_adapter import import_reference_data
+from .qwen3 import (load_qwen3_model, model_from_qwen3_config,
+                    normalized_qwen3_architecture, qwen3_architecture_fingerprint)
+from .vllm_hooks import (RunnerCapture, SchedulerCapture, VllmCaptureWorkerExtension,
+                         install_runner_hook, install_scheduler_hook, register_vllm_hooks,
+                         uninstall_vllm_hooks_plugin)
+from .vllm_capture import load_vllm_captures, normalize_vllm_capture
+from .pp_transport import (estimate_pipeline_transfer, native_pp_descriptor,
+                           validate_native_pp_descriptor)
+from .pp_benchmark import collect_pp_communication
+from .pp_communication import (PPCommunicationModel, calibrate_pp_communication,
+    load_pp_communication_dataset, load_pp_communication_profile, validate_pp_communication_dataset,
+    validate_pp_communication_profile, validate_pp_communication_holdout)
+from .workspace import (WorkspaceModel, calibrate_workspace, load_workspace_dataset,
+    load_workspace_profile, validate_workspace_dataset, validate_workspace_profile, validate_workspace_repeats)
+from .workspace_capture import WorkspaceRecorder, PinnedVllmWorkspaceObserver, collect_workspace
+from .capacity import (collect_memory_capacity, load_capacity_dataset, validate_capacity_dataset,
+                       validate_memory_capacity)
+from .course_roofline import run_chapter1, run_calibrated_chapter1, write_chapter1_report
+from .course_calibration import (import_course_calibration, write_course_calibration_report,
+                                 apply_course_calibration)
+from .constraints import (validate_constraints, evaluate_simulation_constraints, evaluate_dag_constraints)
+from .screening import run_candidate_screening, write_screening_report
+from .load_validation import (validate_closed_loop_spec, generate_request_stream,
+                              closed_loop_policy_sha256, predict_closed_loop, validate_closed_loop)
+from .closed_loop_capture import collect_closed_loop
+from .workload import generate_workload
+from .load_sweep import run_load_sweep, write_load_report
+from .dag import simulate_dag, run_dag_candidates, write_dag_report
+from .sequential import simulate_sequential
+from .agent_catalog import get_agent_catalog
+from .agent_contract import validate_agent_request, validate_agent_response
+from .cost_calibration import freeze_cost_split, fit_analytical_costs, validate_analytical_costs
+from .step_cost_calibration import fit_step_costs, freeze_step_fit_spec
+from .step_profile import (calibrate_step_profile, check_step_stationarity,
+                           freeze_stationarity_policy, step_wall_domain)
+
+__all__ = [
+    "AnalyticalCostSpec",
+    "freeze_cost_split",
+    "fit_analytical_costs",
+    "validate_analytical_costs",
+    "freeze_step_fit_spec",
+    "fit_step_costs",
+    "freeze_stationarity_policy",
+    "check_step_stationarity",
+    "step_wall_domain",
+    "calibrate_step_profile",
+    "simulate_sequential",
+    "get_agent_catalog",
+    "validate_agent_request",
+    "validate_agent_response",
+    "validate_closed_loop_spec",
+    "generate_request_stream",
+    "closed_loop_policy_sha256",
+    "predict_closed_loop",
+    "validate_closed_loop",
+    "collect_closed_loop",
+    "validate_constraints",
+    "evaluate_simulation_constraints",
+    "evaluate_dag_constraints",
+    "import_course_calibration",
+    "write_course_calibration_report",
+    "apply_course_calibration",
+    "run_calibrated_chapter1",
+    "run_candidate_screening",
+    "write_screening_report",
+    "run_chapter1",
+    "write_chapter1_report",
+    "generate_workload",
+    "run_load_sweep",
+    "write_load_report",
+    "simulate_dag",
+    "run_dag_candidates",
+    "write_dag_report",
+    "WorkspaceModel",
+    "calibrate_workspace",
+    "validate_workspace_repeats",
+    "load_workspace_dataset",
+    "load_workspace_profile",
+    "validate_workspace_dataset",
+    "validate_workspace_profile",
+    "WorkspaceRecorder",
+    "PinnedVllmWorkspaceObserver",
+    "collect_workspace",
+    "collect_memory_capacity",
+    "load_capacity_dataset",
+    "validate_capacity_dataset",
+    "validate_memory_capacity",
+    "collect_pp_communication",
+    "PPCommunicationModel",
+    "calibrate_pp_communication",
+    "load_pp_communication_dataset",
+    "load_pp_communication_profile",
+    "validate_pp_communication_dataset",
+    "validate_pp_communication_profile",
+    "validate_pp_communication_holdout",
+    "estimate_pipeline_transfer",
+    "native_pp_descriptor",
+    "validate_native_pp_descriptor",
+    "__version__",
+    "AnalyticalModel",
+    "CalibrationSpec",
+    "DeviceSpec",
+    "EvaluationSpec",
+    "ExecutionSpec",
+    "Experiment",
+    "InfraSpec",
+    "MemoryConfig",
+    "MemoryDecision",
+    "MemoryPlanner",
+    "replica_experiment",
+    "ModelSpec",
+    "RequestSpec",
+    "SimulationError",
+    "SimulationResult",
+    "StepEstimate",
+    "StrategySpec",
+    "experiment_from_dict",
+    "load_experiment",
+    "predict_experiment",
+    "ring_allreduce_ms",
+    "simulate",
+    "validate_experiment",
+    "ProfileModel",
+    "RuntimeCostModel",
+    "fit_runtime_costs",
+    "fit_short_prefill",
+    "freeze_runtime_cost_policy",
+    "create_performance_model",
+    "estimate_profile",
+    "load_dataset",
+    "load_profile",
+    "load_runtime_cost",
+    "runtime_cost_domain",
+    "validate_runtime_cost_model",
+    "profile_identity",
+    "calibrate_dataset",
+    "split_dataset",
+    "validate_holdout",
+    "validate_profile_repeats",
+    "write_json_exclusive",
+    "compare_candidates",
+    "compare_runs",
+    "comparison_contract",
+    "extract_metrics",
+    "calibrate_communication",
+    "load_communication_dataset",
+    "HostSwapManager",
+    "SwapTransfer",
+    "CollectionError",
+    "probe_rocm",
+    "bind_inventory",
+    "collect_steps",
+    "collect_rccl",
+    "parse_rccl_output",
+    "RuntimeTraceRecorder",
+    "collect_vllm",
+    "normalize_runtime_trace",
+    "run_hardware_validation",
+    "import_reference_data",
+    "model_from_qwen3_config",
+    "load_qwen3_model",
+    "normalized_qwen3_architecture",
+    "qwen3_architecture_fingerprint",
+    "RunnerCapture",
+    "SchedulerCapture",
+    "VllmCaptureWorkerExtension",
+    "install_runner_hook",
+    "install_scheduler_hook",
+    "register_vllm_hooks",
+    "uninstall_vllm_hooks_plugin",
+    "load_vllm_captures",
+    "normalize_vllm_capture",
+]

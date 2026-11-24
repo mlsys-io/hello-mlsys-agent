@@ -1,0 +1,413 @@
+"""Strict, dependency-free JSON/TOML experiment loading and validation."""
+
+from dataclasses import fields, is_dataclass
+import json
+import math
+from pathlib import Path
+import types
+import typing
+
+from .schema import Experiment, SimulationError
+
+
+def _invalid(path, message):
+    raise SimulationError("INVALID_CONFIG", f"{path}: {message}")
+
+
+def _value(value, annotation, path, *, parse):
+    origin = typing.get_origin(annotation)
+    if origin is types.UnionType:
+        for option in typing.get_args(annotation):
+            try:
+                return _value(value, option, path, parse=parse)
+            except SimulationError:
+                pass
+        _invalid(path, "value has an invalid type")
+    if annotation is type(None):
+        if value is not None:
+            _invalid(path, "expected null")
+        return None
+    if origin is tuple:
+        if not isinstance(value, (list, tuple)):
+            _invalid(path, "expected an array")
+        item_type = typing.get_args(annotation)[0]
+        return tuple(_value(v, item_type, f"{path}[{i}]", parse=parse)
+                     for i, v in enumerate(value))
+    if isinstance(annotation, type) and is_dataclass(annotation):
+        if isinstance(value, annotation):
+            mapping = {f.name: getattr(value, f.name) for f in fields(annotation)}
+        elif parse and isinstance(value, dict):
+            mapping = value
+        else:
+            _invalid(path, f"expected {annotation.__name__}")
+        valid_fields = {f.name for f in fields(annotation)}
+        unknown = set(mapping) - valid_fields
+        if unknown:
+            _invalid(path, f"unknown fields: {', '.join(sorted(map(str, unknown)))}")
+        hints = typing.get_type_hints(annotation)
+        parsed = {k: _value(v, hints[k], f"{path}.{k}", parse=parse)
+                  for k, v in mapping.items()}
+        try:
+            return annotation(**parsed)
+        except TypeError as exc:
+            _invalid(path, str(exc))
+    if annotation is float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            _invalid(path, "expected a finite number")
+        try:
+            number = float(value)
+        except (ValueError, OverflowError):
+            _invalid(path, "expected a finite number")
+        if not math.isfinite(number):
+            _invalid(path, "expected a finite number")
+        return number
+    if annotation is int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            _invalid(path, "expected an integer")
+        if not -(2 ** 63) <= value <= 2 ** 63 - 1:
+            _invalid(path, "integer must fit the signed 64-bit range")
+    elif not isinstance(value, annotation):
+        _invalid(path, f"expected {annotation.__name__}")
+    return value
+
+
+def _positive(value, path, *, zero=False):
+    if value < 0 if zero else value <= 0:
+        _invalid(path, "must be nonnegative" if zero else "must be positive")
+
+
+def validate_experiment(experiment: Experiment) -> None:
+    """Validate both parsed files and direct Python dataclass construction."""
+    exp = _value(experiment, Experiment, "experiment", parse=False)
+    if exp.schema_version != 1:
+        _invalid("schema_version", "only version 1 is supported")
+    strategy, infra = exp.strategy, exp.infra
+    model, memory, calibration = strategy.model, strategy.memory, exp.calibration
+    for name in ("num_layers", "hidden_size", "intermediate_size",
+                 "num_attention_heads", "num_kv_heads", "head_dim", "vocab_size"):
+        _positive(getattr(model, name), f"strategy.model.{name}")
+    for name in ("weight_bytes", "kv_bytes", "activation_bytes"):
+        width = getattr(model, name)
+        if width <= 0:
+            _invalid(f"strategy.model.{name}", "must be a positive byte width")
+        if width > 8.0:
+            raise SimulationError(
+                "UNSUPPORTED_MECHANISM",
+                f"strategy.model.{name}: storage width {width} exceeds the supported 8-byte maximum",
+            )
+    # Effective per-element widths: the declared value already includes any
+    # block/scale metadata overhead (for example GPTQ-128 is 0.515625 bytes).
+    dtype_bytes = {"float16": 2.0, "bfloat16": 2.0, "float32": 4.0, "float64": 8.0,
+                   "float8_e4m3": 1.0, "float8_e5m2": 1.0, "int8": 1.0,
+                   "int4": 0.5, "float4_e2m1": 0.5}
+    for kind in ("weight", "kv", "activation"):
+        dtype = getattr(model, f"{kind}_dtype")
+        if dtype != "auto" and (dtype not in dtype_bytes or dtype_bytes[dtype] != getattr(model, f"{kind}_bytes")):
+            _invalid(f"strategy.model.{kind}_dtype", "must be auto or an explicit dtype label matching its byte width")
+    if model.weight_dequant not in ("none", "fused", "materialized"):
+        raise SimulationError("UNSUPPORTED_MECHANISM", "weight_dequant must be none, fused or materialized")
+    if model.weight_dequant != "none" and model.weight_bytes >= model.activation_bytes:
+        raise SimulationError(
+            "UNSUPPORTED_MECHANISM",
+            "weight_dequant requires packed storage: weight_bytes must be below activation_bytes",
+        )
+    if not model.name.strip() or not model.revision.strip():
+        _invalid("strategy.model", "name and revision must not be empty")
+    if model.architecture_config_sha256 and (len(model.architecture_config_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in model.architecture_config_sha256)):
+        _invalid("strategy.model.architecture_config_sha256", "must be empty or a lowercase SHA256 hex digest")
+    if model.num_attention_heads % model.num_kv_heads:
+        _invalid("strategy.model", "query heads must be divisible by KV heads")
+    for name in ("tensor_parallel_size", "pipeline_parallel_size", "replicas",
+                 "max_batch_size", "max_batch_tokens", "max_preemptions_per_request",
+                 "pipeline_microbatch_size", "pipeline_max_inflight_microbatches",
+                 "prefix_cache_max_blocks", "prefill_chunk_tokens"):
+        _positive(getattr(strategy, name), f"strategy.{name}")
+    if strategy.max_active_requests is not None:
+        _positive(strategy.max_active_requests, "strategy.max_active_requests")
+    if strategy.pipeline_microbatch_size > strategy.max_batch_size:
+        _invalid("strategy.pipeline_microbatch_size", "cannot exceed max_batch_size")
+    _positive(strategy.pipeline_feedback_latency_us, "strategy.pipeline_feedback_latency_us", zero=True)
+    if strategy.pipeline_transport not in ("full_hidden", "vllm_native"):
+        raise SimulationError("UNSUPPORTED_MECHANISM", "pipeline_transport must be full_hidden or vllm_native")
+    _positive(strategy.pipeline_transport_max_tokens, "strategy.pipeline_transport_max_tokens", zero=True)
+    if strategy.pipeline_transport_max_tokens and strategy.pipeline_transport_max_tokens < strategy.max_batch_tokens:
+        _invalid("strategy.pipeline_transport_max_tokens", "must cover max_batch_tokens")
+    if strategy.pipeline_transport == "vllm_native":
+        if strategy.pipeline_parallel_size <= 1:
+            _invalid("strategy.pipeline_transport", "vllm_native requires PP > 1")
+        if model.activation_dtype == "auto":
+            _invalid("strategy.model.activation_dtype", "vllm_native requires an explicit activation dtype")
+    if strategy.replica_routing not in ("round_robin", "least_loaded", "prefix_aware"):
+        raise SimulationError("UNSUPPORTED_MECHANISM", "replica_routing must be round_robin, least_loaded or prefix_aware")
+    if strategy.scheduler not in ("fifo", "continuous_batching"):
+        raise SimulationError("UNSUPPORTED_MECHANISM", "unsupported scheduler")
+    if strategy.preemption not in ("none", "recompute", "swap"):
+        raise SimulationError("UNSUPPORTED_MECHANISM", "supported preemption policies are none/recompute/swap")
+    if strategy.swap_fallback not in ("none", "recompute"):
+        raise SimulationError("UNSUPPORTED_MECHANISM", "swap_fallback must be none or recompute")
+    if strategy.swap_fallback != "none" and strategy.preemption != "swap":
+        _invalid("strategy.swap_fallback", "requires preemption=swap")
+    if strategy.preemption == "swap" and memory.cpu_swap_bytes <= 0:
+        _invalid("strategy.memory.cpu_swap_bytes", "swap requires a positive host capacity")
+    tp, pp = strategy.tensor_parallel_size, strategy.pipeline_parallel_size
+    if tp not in (1, 2, 4):
+        raise SimulationError("UNSUPPORTED_MECHANISM", "supported TP degrees are 1, 2, and 4")
+    for name in ("num_attention_heads", "hidden_size", "intermediate_size", "vocab_size"):
+        if getattr(model, name) % tp:
+            _invalid(f"strategy.model.{name}", "must be divisible by TP")
+    if (model.num_kv_heads % tp if tp < model.num_kv_heads else tp % model.num_kv_heads):
+        _invalid("strategy.model.num_kv_heads", "KV head sharding/replication is not integral")
+    if pp > model.num_layers:
+        _invalid("strategy.pipeline_parallel_size", "cannot exceed number of layers")
+    if strategy.stage_layers:
+        if (len(strategy.stage_layers) != pp or min(strategy.stage_layers) <= 0
+                or sum(strategy.stage_layers) != model.num_layers):
+            _invalid("strategy.stage_layers", "positive counts must cover all layers exactly")
+    if len(infra.devices) != strategy.replicas * tp * pp:
+        _invalid("infra.devices", "must contain exactly replicas × PP × TP devices in replica/stage/rank order")
+    ids = [device.id for device in infra.devices]
+    if len(set(ids)) != len(ids) or not all(ids):
+        _invalid("infra.devices", "device IDs must be unique and nonempty")
+    for i, device in enumerate(infra.devices):
+        if not device.name.strip():
+            _invalid(f"infra.devices[{i}].name", "must not be empty")
+        for name in ("memory_bytes", "compute_tflops", "memory_bandwidth_gbps"):
+            _positive(getattr(device, name), f"infra.devices[{i}].{name}")
+    # Compute/bandwidth differences are conservatively modeled by slowest rank.
+    _positive(infra.link_bandwidth_gbps, "infra.link_bandwidth_gbps")
+    _positive(infra.link_latency_us, "infra.link_latency_us", zero=True)
+    if not infra.topology.strip():
+        _invalid("infra.topology", "must not be empty")
+    for f in fields(memory):
+        if f.name == "gpu_memory_utilization":
+            continue
+        _positive(getattr(memory, f.name), f"strategy.memory.{f.name}",
+                  zero=f.name not in ("kv_block_tokens", "kv_pool_bytes", "swap_d2h_bandwidth_gbps",
+                                      "swap_h2d_bandwidth_gbps"))
+    if memory.gpu_memory_utilization is not None and not 0 < memory.gpu_memory_utilization <= 1:
+        _invalid("strategy.memory.gpu_memory_utilization", "must be in (0, 1]")
+    if calibration.backend not in ("analytical", "synthetic", "profile", "runtime"):
+        raise SimulationError("UNSUPPORTED_MECHANISM", "supported backends are analytical, synthetic, profile and runtime")
+    communication_selected = (calibration.native_pp_communication_profile_path is not None
+                              or bool(calibration.replica_native_pp_communication_profile_paths))
+    workspace_selected = (calibration.workspace_profile_path is not None
+                          or bool(calibration.replica_workspace_profile_paths))
+    if workspace_selected:
+        if strategy.replicas == 1:
+            if (not calibration.workspace_profile_path or not calibration.workspace_profile_path.strip()
+                    or calibration.replica_workspace_profile_paths):
+                _invalid("calibration", "one replica requires one Workspace Profile path")
+        elif (calibration.workspace_profile_path is not None
+              or len(calibration.replica_workspace_profile_paths) != strategy.replicas
+              or any(not path.strip() for path in calibration.replica_workspace_profile_paths)):
+            _invalid("calibration", "Workspace requires one Profile path per replica")
+    elif calibration.workspace_profile_version:
+        _invalid("calibration.workspace_profile_version", "Workspace version requires an explicitly selected Profile")
+    if communication_selected:
+        if strategy.pipeline_transport != "vllm_native" or not strategy.pipeline_p2p:
+            _invalid("calibration", "native PP communication Profiles require native transport and enabled P2P")
+        if strategy.replicas == 1:
+            if (not calibration.native_pp_communication_profile_path
+                    or not calibration.native_pp_communication_profile_path.strip()
+                    or calibration.replica_native_pp_communication_profile_paths):
+                _invalid("calibration", "one replica requires one native PP communication Profile path")
+        elif (calibration.native_pp_communication_profile_path is not None
+              or len(calibration.replica_native_pp_communication_profile_paths) != strategy.replicas
+              or any(not path.strip() for path in calibration.replica_native_pp_communication_profile_paths)):
+            _invalid("calibration", "native PP communication requires one Profile path per replica")
+    elif (calibration.native_pp_communication_profile_version
+          or calibration.native_pp_communication_allow_extrapolation):
+        _invalid("calibration", "native PP communication overrides require an explicitly selected Profile")
+    if calibration.backend == "runtime":
+        if strategy.replicas != 1 or strategy.tensor_parallel_size != 1 or strategy.pipeline_parallel_size != 1:
+            raise SimulationError("UNSUPPORTED_MECHANISM", "runtime costs require one replica with TP1/PP1")
+        if calibration.profile_path is None or not calibration.profile_path.strip():
+            _invalid("calibration.profile_path", "runtime backend requires a Runtime cost file")
+        if calibration.replica_profile_paths or calibration.allow_extrapolation or calibration.analytical_costs:
+            _invalid("calibration", "runtime costs do not accept replica paths, extrapolation or analytical cost entries")
+        if calibration.timing_boundary != "engine_core_step_wall_v1":
+            raise SimulationError("UNSUPPORTED_MECHANISM", "runtime costs require the engine-core step-wall boundary")
+    elif calibration.backend == "profile":
+        if strategy.replicas == 1:
+            if calibration.profile_path is None or not calibration.profile_path.strip():
+                _invalid("calibration.profile_path", "profile backend requires a profile file")
+            if calibration.replica_profile_paths:
+                _invalid("calibration.replica_profile_paths", "single replicas use profile_path")
+        elif (calibration.profile_path is not None
+              or len(calibration.replica_profile_paths) != strategy.replicas
+              or any(not path.strip() for path in calibration.replica_profile_paths)):
+            _invalid("calibration.replica_profile_paths", "multiple replicas require one path each and no profile_path")
+    elif (calibration.profile_path is not None or calibration.replica_profile_paths
+          or calibration.allow_extrapolation
+          or calibration.allow_test_fixture and not (communication_selected or workspace_selected
+                                                     or calibration.analytical_costs)):
+        _invalid("calibration", "profile file and domain/source overrides require backend=profile")
+    for name in ("runtime_name", "runtime_version", "driver_version", "rocm_version", "rccl_version",
+                 "timing_boundary"):
+        if not getattr(calibration, name).strip():
+            _invalid(f"calibration.{name}", "must not be empty")
+    if calibration.runtime_config_sha256 and (len(calibration.runtime_config_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in calibration.runtime_config_sha256)):
+        _invalid("calibration.runtime_config_sha256", "must be empty or a lowercase SHA256 hex digest")
+    from .analytical_cost import validate_analytical_costs
+    validate_analytical_costs(experiment)
+    if calibration.timing_boundary == "engine_core_step_wall_v1":
+        if calibration.backend != "runtime":
+            raise SimulationError("UNSUPPORTED_MECHANISM", "Engine-core step-wall timing requires backend=runtime")
+        if not calibration.runtime_config_sha256:
+            _invalid("calibration.runtime_config_sha256", "engine-core timing requires an explicit SHA256 digest")
+    elif calibration.timing_boundary == "reported_l2_step_hook_wall_v1":
+        if calibration.backend != "profile":
+            raise SimulationError("UNSUPPORTED_MECHANISM", "Reported step-wall timing requires backend=profile")
+        if not calibration.runtime_config_sha256:
+            _invalid("calibration.runtime_config_sha256", "reported step-wall timing requires an explicit SHA256 digest")
+    elif calibration.timing_boundary != "step_includes_output_and_sampling_v1":
+        raise SimulationError("UNSUPPORTED_MECHANISM", "unsupported step timing boundary")
+    if not calibration.profile_version:
+        _invalid("calibration.profile_version", "must not be empty")
+    for name in ("compute_efficiency", "bandwidth_efficiency"):
+        value = getattr(calibration, name)
+        if not 0 < value <= 1:
+            _invalid(f"calibration.{name}", "must be in (0, 1]")
+    for name in ("launch_overhead_us", "framework_overhead_us"):
+        _positive(getattr(calibration, name), f"calibration.{name}", zero=True)
+    _positive(calibration.dequant_flops_per_weight, "calibration.dequant_flops_per_weight")
+    for name in ("prefill_ms", "decode_ms", "recompute_ms", "mixed_ms"):
+        _positive(getattr(calibration, name), f"calibration.{name}")
+    request_ids = set()
+    def validate_prompt(request, path):
+        if request.prompt_token_ids:
+            if len(request.prompt_token_ids) != request.input_tokens:
+                _invalid(f"{path}.prompt_token_ids", "must contain exactly input_tokens IDs")
+            if any(token < 0 or token >= model.vocab_size for token in request.prompt_token_ids):
+                _invalid(f"{path}.prompt_token_ids", "IDs must be in [0, vocab_size)")
+
+    for i, request in enumerate(exp.workload):
+        path = f"workload[{i}]"
+        if not request.request_id or request.request_id in request_ids:
+            _invalid(path, "request IDs must be nonempty and unique")
+        request_ids.add(request.request_id)
+        _positive(request.arrival_ms, f"{path}.arrival_ms", zero=True)
+        _positive(request.input_tokens, f"{path}.input_tokens")
+        _positive(request.output_tokens, f"{path}.output_tokens")
+        validate_prompt(request, path)
+        if request.timeout_ms is not None:
+            _positive(request.timeout_ms, f"{path}.timeout_ms", zero=True)
+    warmup_ids = set()
+    for i, request in enumerate(exp.execution.warmup):
+        path = f"execution.warmup[{i}]"
+        if not request.request_id.strip() or request.request_id in warmup_ids:
+            _invalid(path, "warmup request IDs must be nonempty and unique")
+        warmup_ids.add(request.request_id)
+        _positive(request.arrival_ms, f"{path}.arrival_ms", zero=True)
+        _positive(request.input_tokens, f"{path}.input_tokens")
+        _positive(request.output_tokens, f"{path}.output_tokens")
+        validate_prompt(request, path)
+        if request.timeout_ms is not None:
+            _positive(request.timeout_ms, f"{path}.timeout_ms", zero=True)
+    if exp.execution.initial_state != "empty_cache":
+        raise SimulationError("UNSUPPORTED_MECHANISM", "only empty_cache initial state is supported")
+    for f in fields(exp.evaluation):
+        value = getattr(exp.evaluation, f.name)
+        if f.name != "drain" and value is not None:
+            _positive(value, f"evaluation.{f.name}", zero=f.name != "measurement_window_ms")
+    if exp.evaluation.max_drain_ms is not None:
+        if exp.evaluation.measurement_window_ms is None or not exp.evaluation.drain:
+            _invalid("evaluation.max_drain_ms", "requires a measurement window and drain=true")
+    if not exp.evaluation.drain and exp.evaluation.measurement_window_ms is None:
+        _invalid("evaluation.drain", "drain=false requires a measurement window")
+    _positive(exp.execution.max_simulated_ms, "execution.max_simulated_ms")
+    _positive(exp.execution.max_events, "execution.max_events")
+
+
+def experiment_from_dict(mapping: dict[str, typing.Any]) -> Experiment:
+    experiment = _value(mapping, Experiment, "experiment", parse=True)
+    validate_experiment(experiment)
+    return experiment
+
+
+def _no_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            _invalid("config", f"duplicate key {key!r}")
+        result[key] = value
+    return result
+
+
+def _read(path: Path):
+    try:
+        content = path.read_text(encoding="utf-8")
+        if path.suffix.lower() == ".toml":
+            import tomllib
+            return tomllib.loads(content)
+        if path.suffix.lower() == ".jsonl":
+            return [json.loads(line, object_pairs_hook=_no_duplicate_keys)
+                    for line in content.splitlines() if line.strip()]
+        if path.suffix.lower() in (".yaml", ".yml"):
+            try:
+                import yaml
+            except ImportError as exc:
+                raise SimulationError("INVALID_CONFIG", "YAML requires installed PyYAML; use JSON/TOML otherwise") from exc
+            class StrictLoader(yaml.SafeLoader):
+                pass
+            def construct_mapping(loader, node, deep=False):
+                return _no_duplicate_keys(
+                    (loader.construct_object(k, deep=deep), loader.construct_object(v, deep=deep))
+                    for k, v in node.value)
+            StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+                                         construct_mapping)
+            try:
+                return yaml.load(content, Loader=StrictLoader)
+            except yaml.YAMLError as exc:
+                raise SimulationError("INVALID_CONFIG", f"{path}: {exc}") from exc
+        return json.loads(content, object_pairs_hook=_no_duplicate_keys)
+    except SimulationError:
+        raise
+    except (OSError, ValueError, TypeError) as exc:
+        raise SimulationError("INVALID_CONFIG", f"{path}: {exc}") from exc
+
+
+def load_experiment(path: str | Path) -> Experiment:
+    """Load a config; section references resolve relative to its own directory."""
+    source = Path(path)
+    mapping = _read(source)
+    if not isinstance(mapping, dict):
+        _invalid(str(source), "experiment must be an object")
+    mapping = dict(mapping)
+    strategy_root = source.parent
+    calibration_root = source.parent
+    execution_root = source.parent
+    for section in ("workload", "infra", "strategy", "calibration", "evaluation", "execution"):
+        if isinstance(mapping.get(section), str):
+            referenced_path = source.parent / mapping[section]
+            mapping[section] = _read(referenced_path)
+            if section == "strategy":
+                strategy_root = referenced_path.parent
+            elif section == "calibration":
+                calibration_root = referenced_path.parent
+            elif section == "execution":
+                execution_root = referenced_path.parent
+    if isinstance(mapping.get("strategy"), dict):
+        strategy = dict(mapping["strategy"])
+        if isinstance(strategy.get("model"), str):
+            strategy["model"] = _read(strategy_root / strategy["model"])
+        mapping["strategy"] = strategy
+    if isinstance(mapping.get("calibration"), dict):
+        calibration = dict(mapping["calibration"])
+        for name in ("profile_path", "native_pp_communication_profile_path", "workspace_profile_path"):
+            if isinstance(calibration.get(name), str):
+                calibration[name] = str((calibration_root / calibration[name]).resolve())
+        for name in ("replica_profile_paths", "replica_native_pp_communication_profile_paths", "replica_workspace_profile_paths"):
+            if isinstance(calibration.get(name), (list, tuple)):
+                calibration[name] = [
+                    str((calibration_root / path).resolve()) if isinstance(path, str) else path
+                    for path in calibration[name]]
+        mapping["calibration"] = calibration
+    if isinstance(mapping.get("execution"), dict):
+        execution = dict(mapping["execution"])
+        if isinstance(execution.get("warmup"), str):
+            execution["warmup"] = _read(execution_root / execution["warmup"])
+        mapping["execution"] = execution
+    return experiment_from_dict(mapping)

@@ -27,15 +27,10 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 
 
-class Loop:
-    def __init__(self, root=None, allow_fixture=False):
-        self.root = Path(root or REPO / "calibration")
-        self.allow_fixture = allow_fixture
-        self.budgets = yaml.safe_load((self.root / "budgets.yaml").read_text())
-
-    # -- helpers ---------------------------------------------------------------------------------------------
-    def sim(self, *args):
-        flags = ["--allow-test-fixture"] if self.allow_fixture else []
+def simulator(allow_fixture):
+    """Run one `mlsys-sim` subcommand in this interpreter; the parsed status line, or SystemExit on failure."""
+    def sim(*args):
+        flags = ["--allow-test-fixture"] if allow_fixture else []
         done = subprocess.run([sys.executable, "-m", "mlsys_sim", *args, *flags], capture_output=True, text=True)
         try:
             status = json.loads(done.stdout.strip().splitlines()[-1])
@@ -44,6 +39,54 @@ class Loop:
         if done.returncode != 0 or status.get("status") != "COMPLETED":
             raise SystemExit(f"mlsys-sim {args[0]} failed: {(done.stdout + done.stderr).strip()[-600:]}")
         return status
+    return sim
+
+
+def gate(train, holdout, current, version, budgets, allow_fixture=False, keep=None):
+    """Stateless promotion gate: fit a candidate Profile on `train`, score it and the `current` Profile (or None)
+    on the same `holdout`, and apply `budgets`. `keep` receives the fitted Profile. Used by the ledger below and
+    by the `calibrate` job in mlab.jobs."""
+    sim = simulator(allow_fixture)
+    holdout_records = len(json.loads(Path(holdout).read_text())["records"])
+    with tempfile.TemporaryDirectory() as scratch:
+        scratch = Path(scratch)
+
+        def score(profile, name):
+            sim("validate", "--dataset", str(holdout), "--profile", str(profile), "--out", str(scratch / name))
+            return json.loads((scratch / name / "result.json").read_text())["summary"]
+
+        parent = ["--parent-profile", str(current)] if current else []
+        sim("calibrate", "--dataset", str(train), "--profile-version", version, *parent, "--out", str(scratch / "fit"))
+        candidate = score(scratch / "fit/profile.json", "candidate")
+        baseline = score(current, "current") if current else None
+        if keep:
+            shutil.copyfile(scratch / "fit/profile.json", keep)
+    reasons = []
+    if holdout_records < budgets["min_holdout_records"]:
+        reasons.append(f"holdout has {holdout_records} records; need {budgets['min_holdout_records']}")
+    coverage, mape = candidate["coverage"] or 0.0, candidate["mape_percent"]
+    if coverage < budgets["min_coverage"]:
+        reasons.append(f"candidate covers {coverage:.0%} of the holdout; need {budgets['min_coverage']:.0%}")
+    if mape is None or mape > budgets["max_mape_percent"]:
+        reasons.append(f"candidate holdout MAPE {mape}% exceeds {budgets['max_mape_percent']}%")
+    if baseline and baseline["mape_percent"] is not None and mape is not None and \
+            mape > baseline["mape_percent"] + budgets["regression_tolerance_percent"]:
+        reasons.append(f"candidate MAPE {mape:.2f}% regresses on the current Profile's {baseline['mape_percent']:.2f}%")
+    if baseline and coverage + 1e-9 < (baseline["coverage"] or 0.0):
+        reasons.append(f"candidate coverage {coverage:.0%} is below the current Profile's {baseline['coverage']:.0%}")
+    return {"version": version, "candidate": candidate, "current_on_holdout": baseline,
+            "promote": not reasons, "reasons": reasons}
+
+
+class Loop:
+    def __init__(self, root=None, allow_fixture=False):
+        self.root = Path(root or REPO / "calibration")
+        self.allow_fixture = allow_fixture
+        self.budgets = yaml.safe_load((self.root / "budgets.yaml").read_text())
+
+    # -- helpers ---------------------------------------------------------------------------------------------
+    def sim(self, *args):
+        return simulator(self.allow_fixture)(*args)
 
     @staticmethod
     def digest(path):
@@ -146,10 +189,6 @@ class Loop:
         stem = entry["sha256"][:16]
         return folder / f"{stem}.train.json", folder / f"{stem}.holdout.json"
 
-    def score(self, profile, holdout, scratch, name):
-        self.sim("validate", "--dataset", str(holdout), "--profile", str(profile), "--out", str(scratch / name))
-        return json.loads((scratch / name / "result.json").read_text())["summary"]
-
     def evaluate(self, sha, keep=None):
         entry = self.entry(sha)
         train, holdout = self.files(entry)
@@ -158,31 +197,9 @@ class Loop:
                 raise SystemExit(f"{path.name} changed since ingest; the holdout split is frozen")
         current = self.current(entry["identity_key"])
         versions = [e for e in self.ledger() if e["event"] == "promote" and e["identity_key"] == entry["identity_key"]]
-        version = f"v{len(versions) + 1}"
-        with tempfile.TemporaryDirectory() as scratch:
-            scratch = Path(scratch)
-            parent = ["--parent-profile", str(current)] if current else []
-            self.sim("calibrate", "--dataset", str(train), "--profile-version", version, *parent, "--out", str(scratch / "fit"))
-            candidate = self.score(scratch / "fit/profile.json", holdout, scratch, "candidate")
-            baseline = self.score(current, holdout, scratch, "current") if current else None
-            if keep:
-                shutil.copyfile(scratch / "fit/profile.json", keep)
-        budgets, reasons = self.budgets, []
-        if entry["holdout_records"] < budgets["min_holdout_records"]:
-            reasons.append(f"holdout has {entry['holdout_records']} records; need {budgets['min_holdout_records']}")
-        coverage, mape = candidate["coverage"] or 0.0, candidate["mape_percent"]
-        if coverage < budgets["min_coverage"]:
-            reasons.append(f"candidate covers {coverage:.0%} of the holdout; need {budgets['min_coverage']:.0%}")
-        if mape is None or mape > budgets["max_mape_percent"]:
-            reasons.append(f"candidate holdout MAPE {mape}% exceeds {budgets['max_mape_percent']}%")
-        if baseline and baseline["mape_percent"] is not None and mape is not None and \
-                mape > baseline["mape_percent"] + budgets["regression_tolerance_percent"]:
-            reasons.append(f"candidate MAPE {mape:.2f}% regresses on the current Profile's {baseline['mape_percent']:.2f}%")
-        if baseline and coverage + 1e-9 < (baseline["coverage"] or 0.0):
-            reasons.append(f"candidate coverage {coverage:.0%} is below the current Profile's {baseline['coverage']:.0%}")
-        return {"dataset": entry["sha256"][:16], "identity_key": entry["identity_key"], "version": version,
-                "current": current.stem if current else None, "candidate": candidate, "current_on_holdout": baseline,
-                "promote": not reasons, "reasons": reasons}
+        decision = gate(train, holdout, current, f"v{len(versions) + 1}", self.budgets, self.allow_fixture, keep)
+        return {"dataset": entry["sha256"][:16], "identity_key": entry["identity_key"],
+                "current": current.stem if current else None, **decision}
 
     def promote(self, sha):
         entry = self.entry(sha)

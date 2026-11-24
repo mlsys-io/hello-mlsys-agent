@@ -1,0 +1,47 @@
+name: Tool image
+
+# Builds the job image (Dockerfile) on every PR and smoke-tests it; on a vX.Y.Z tag it also pushes
+# ghcr.io/mlsys-io/hello-mlsys-agent:vX.Y.Z (+ :sha-<commit>) and records the digest, which is what
+# deployments pin. Package tags sim-v*/lab-v* (mirrors) do not match and do not publish an image.
+
+on:
+  pull_request:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/mlsys-io/hello-mlsys-agent
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Build
+        run: docker build -t local/hello-mlsys-agent:ci .
+      - name: Smoke test (no network)
+        run: |
+          docker run --rm --network none local/hello-mlsys-agent:ci list
+          echo '{"task":"9.2"}' | docker run --rm -i --network none local/hello-mlsys-agent:ci sweep > sweep.json
+          python3 -c "import json; d = json.load(open('sweep.json')); assert d['ok'] and d['reference']['best']['value'] > 0, d; print('sweep ok', d['reference']['best']['value'])"
+      - name: Push
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          tag="${GITHUB_REF_NAME}"
+          for name in "$IMAGE:$tag" "$IMAGE:sha-${GITHUB_SHA::12}"; do
+            docker tag local/hello-mlsys-agent:ci "$name"
+            docker push "$name"
+          done
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$tag")
+          echo "Pushed \`$IMAGE:$tag\` as \`$digest\`" >> "$GITHUB_STEP_SUMMARY"

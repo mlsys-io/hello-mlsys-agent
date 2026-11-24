@@ -182,3 +182,21 @@ def test_objective_is_scored_against_the_shipped_reference_optimum(tmp_path):
     assert scores["objective"] == 4
     # The stand-in hardware contradicted the selection, so validation credit is withheld.
     assert record["facts"]["conclusion"] == "unresolved" and scores["evidence_level"] == 0
+
+
+def test_a_teacher_failure_never_reports_a_saved_conclusion_as_rejected(concluded, monkeypatch):
+    from mlab.cli import auto_assess
+    monkeypatch.delenv("MLAB_TEACHER_URL", raising=False)
+    monkeypatch.setenv("MLAB_TEACHER_BASE_URL", "http://teacher.example.com/v1")  # refused: plain HTTP to a public host
+    result = auto_assess(concluded)
+    assert result["status"] == "failed" and "saved" in result["say"]
+
+
+def test_launcher_reports_configuration_errors_without_a_traceback(tmp_path, monkeypatch, capsys):
+    from mlab.core.workspace import initialize
+    from mlab.launch import main
+    initialize(tmp_path / "ws", "9.2", "fixture")
+    monkeypatch.setenv("QWEN38_BASE_URL", "http://8.8.8.8:8000/v1")
+    monkeypatch.setattr("mlab.launch.require_pinned_claude", lambda: "/bin/true")
+    assert main(["--workspace", str(tmp_path / "ws")]) != 0
+    assert "HTTPS" in capsys.readouterr().err

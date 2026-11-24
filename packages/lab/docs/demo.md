@@ -1,5 +1,7 @@
 # Real simulator API demonstrations
 
+> **Note (Claude Code migration).** The recording procedures below that call `scripts/start-soc.sh` document earlier Codex-based recordings; that script and the Codex profiles were removed. The live commands now use the default student agent, Claude Code on Qwen 3.8 27B (`QWEN38_BASE_URL`, `QWEN38_MODEL`, `QWEN38_API_KEY`), see the README.
+
 The latest three-task recordings use MLSys Simulator 1.20.0 over HTTP with explicitly disclosed Qwen3 BF16 integration configurations. See [application integration and recording commands](../integrations/mlsys-simulator/APP_INTEGRATION.zh-CN.md). The older walkthroughs below use synthetic fixture backends.
 
 # Demo: learning through conversation and experiments
@@ -52,10 +54,10 @@ From the repository root, after `scripts/setup.sh`:
 
 ```bash
 source .venv/bin/activate
-mlab web workspaces/conversation-demo --provider codex-luna --simulator fixture --no-opening
+mlab web workspaces/conversation-demo --simulator fixture --no-opening
 ```
 
-Open the printed address, or its SSH/editor port forward, and choose a task. For SoC Qwen, start a fresh course with `scripts/start-soc.sh workspaces/soc-conversation-demo` instead. See [Codex integration](codex.md) for credentials, isolation and provider limits. An offline preview can use `--agent fake`; its experiment controls and scripted execution requests work, but it does not provide model explanations.
+Open the printed address, or its SSH/editor port forward, and choose a task. Set the `QWEN38_*` variables first; `mlab doctor --live` checks them. An offline preview can use `--agent fake`; its experiment controls and scripted execution requests work, but it does not provide model explanations.
 
 Start with a question that needs no experiment: "What does this task ask me to learn?" or "Why can throughput improve while response time gets worse?" Continue in your own words. The assistant should explain the question, not require a hypothesis form or turn every answer into another run.
 
@@ -165,19 +167,19 @@ Open `workspaces/all-tasks-review/index.html` for the gallery. Each task links i
 
 The remaining sections document the earlier guided flow used by terminal demonstrations and the `/classic` page. They are retained to explain existing recordings and records. Their required sequence and confirmation cards do not describe the default workbench.
 
-The student writes the hypothesis and falsification condition, comments on the plan, chooses hardware points and makes the decisions; to find out why simulation and measurement disagree, the student asks the agent to help analyze the data. The agent plans, runs and drafts the records. The fast flywheel is the simulator, with no limit on runs; the slow flywheel is the hardware stand-in, with a budget of 8 runs. The flow is two simulation rounds and two measurements, about 7 confirmation prompts. The current agent is Codex / GPT-6 Luna; duration depends on model response times. All numbers are placeholder numbers, and the hardware stand-in is not real hardware.
+The student writes the hypothesis and falsification condition, comments on the plan, chooses hardware points and makes the decisions; to find out why simulation and measurement disagree, the student asks the agent to help analyze the data. The agent plans, runs and drafts the records. The fast flywheel is the simulator, with no limit on runs; the slow flywheel is the hardware stand-in, with a budget of 8 runs. The flow is two simulation rounds and two measurements, about 7 confirmation prompts. The current agent is Claude Code on Qwen 3.8 27B; duration depends on model response times. All numbers are placeholder numbers, and the hardware stand-in is not real hardware.
 
 ## Setup
 
 ```bash
-scripts/setup.sh                # first time only: installs Python dependencies and checks the supported Codex version
+scripts/setup.sh                # first time only: installs Python dependencies and the pinned Claude Code
 source .venv/bin/activate
-mlab doctor                     # codex_version_matches_pin should be true and auth should be present
-mlab init --task 9.2 --simulator fixture --provider codex-luna workspaces/demo2
-cd workspaces/demo2 && ./codex
+mlab doctor --live              # claude_version_matches_pin true and agent.live_check passed
+mlab init --task 9.2 --simulator fixture workspaces/demo2
+cd workspaces/demo2 && ./claude
 ```
 
-Log in once with the installed `codex login`, or set `OPENAI_API_KEY`. The lab uses a separate state directory and reads the existing login without modifying it; see [Codex integration](codex.md).
+Set `QWEN38_BASE_URL`, `QWEN38_MODEL` and, if needed, `QWEN38_API_KEY`; `./claude` keeps the key in its own process.
 
 ## Steps
 
@@ -246,7 +248,7 @@ All four hardware runs are about 12% slower than the simulation, but all meet th
 The same terminal story, shown on the earlier `/classic` page. The unit of work on the page is a session: a session does one task from the start and has its own records and agent. The student's words can go into the forms in the middle column or into the chat in the right column.
 
 ```bash
-mlab web workspaces/web-demo --simulator fixture --provider codex-luna
+mlab web workspaces/web-demo --simulator fixture
 ```
 
 The terminal prints the page address. Open that address with `/classic` appended for this legacy demonstration; when connected to a remote server, open the address given by the editor's port forwarding (in VS Code, the "Ports" panel). If port 8765 is taken, add `--port` with a free port. In the left column, click "New session" and choose "9.2 Single-node serving under an SLA". The steps below use forms, chat, quick replies and confirmation cards at least once each; any step can instead be done by typing the student's line from the table in the previous section into the chat, and the agent writes the words into the files and brings up a confirmation card when confirmation is needed.
@@ -291,15 +293,15 @@ The hardware stand-in returns immediately by default. To demonstrate queueing on
 ## Switching to the LLM simulator
 
 ```bash
-mlab init --task 9.2 --simulator llm --provider codex-luna workspaces/demo2-llm
-cd workspaces/demo2-llm && ./codex
+mlab init --task 9.2 --simulator llm workspaces/demo2-llm
+cd workspaces/demo2-llm && ./claude
 ```
 
 GPT-6 Luna estimates the simulation results; the steps and inputs stay the same. The simulated numbers vary slightly from run to run, and an occasional verdict may differ; the hardware stand-in's numbers do not change. When the model API fails, `mlab next` enters `retry_backend`, and resubmitting reruns only the failed runs.
 
 ## Interrupting and starting over
 
-- **Resume:** after exiting, run `./codex` again in the same workspace; the conversation resumes and the agent reads `mlab next`, and completed runs are not rerun.
+- **Resume:** after exiting, run `./claude --continue` in the same workspace; the conversation resumes and the agent reads `mlab next`, and completed runs are not rerun.
 - **Start over:** run `mlab init` again with a new workspace name.
 
 ## Fallbacks

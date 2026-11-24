@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .agent_env import FOREIGN_PREFIXES, PROVIDER_SWITCHES, endpoint, load_profile, open_endpoint
 from .core.io import LabError, load, require_pinned_claude, tool_path
+from .gateway import GatewayError
 
 CLAUDE_FLAGS = ["--setting-sources", "project,local", "--tools", "Bash,Read,Edit,Write"]
 
@@ -50,7 +51,8 @@ def start_teacher(root, env):
         return None
     token = secrets.token_urlsafe(24)
     relay = serve(root, TeacherClient(config), token)
-    env.update({"MLAB_TEACHER_URL": f"http://127.0.0.1:{relay.server_port}", "MLAB_TEACHER_TOKEN": token})
+    env.update({"MLAB_TEACHER_URL": f"http://127.0.0.1:{relay.server_port}", "MLAB_TEACHER_TOKEN": token,
+                "MLAB_TEACHER_TIMEOUT_S": str(int(4 * config["timeout"] + 60))})
     print(f"mlab: teacher {config['model']} available to `mlab ask` and `mlab assess`.", file=sys.stderr)
     return relay
 
@@ -66,15 +68,20 @@ def main(argv=None):
         resolved = endpoint(profile)
         claude = require_pinned_claude()
         server, url, token = open_endpoint(resolved)
-    except LabError as error:
+    except (LabError, GatewayError, ValueError) as error:
         print(f"mlab: {error}", file=sys.stderr)
-        return error.exit_code
+        return getattr(error, "exit_code", 2)
     env = agent_environment(profile, url, token, resolved.get("model"))
-    relay = start_teacher(root, env)
+    relay = None
     if server:
         print(f"mlab: {profile['id']} -> {resolved['model']} via the local gateway; the provider key stays in this process.",
               file=sys.stderr)
     try:
+        try:
+            relay = start_teacher(root, env)
+        except LabError as error:
+            print(f"mlab: {error}", file=sys.stderr)
+            return error.exit_code
         process = subprocess.Popen([claude, *CLAUDE_FLAGS, *claude_args], cwd=root, env=env)
         # Ctrl+C goes to the whole foreground group: Claude Code handles it, and this process keeps the
         # gateway up until Claude Code itself exits.

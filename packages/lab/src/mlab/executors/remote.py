@@ -2,6 +2,7 @@
 import json
 import os
 import time
+from collections import Counter
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -13,6 +14,11 @@ from ..gateway import plain_http_allowed
 from .base import SCHEMA, MeasurementRecord
 
 TERMINAL = {"succeeded", "failed", "cancelled"}
+POLL_RETRIES = 4  # consecutive failed polls tolerated (5xx, timeouts, network blips) before giving up
+
+
+class HardwareTimeout(LabError):
+    """The job did not finish before the run deadline; the worker records the run as timed_out."""
 
 
 class RemoteExecutor:
@@ -46,28 +52,47 @@ class RemoteExecutor:
         require(isinstance(reply.get("job_id"), str) and reply["job_id"], "E_BACKEND_UNAVAILABLE", "Hardware service returned no job id", 4)
         return reply["job_id"]
 
+    def cancel(self, job_id):
+        """Best effort: a job the lab stops waiting for must not keep a GPU busy."""
+        try:
+            self._call("POST", f"/v1/jobs/{urllib.parse.quote(job_id)}/cancel", {})
+        except LabError:
+            pass
+
     def wait(self, job_id, cancelled=lambda: False):
         deadline = time.monotonic() + self.timeout_s
+        failures = 0
         while time.monotonic() < deadline:
             if cancelled():
-                self._call("POST", f"/v1/jobs/{urllib.parse.quote(job_id)}/cancel", {})
                 raise LabError("E_NEEDS_APPROVAL", "Measurement cancelled", 3)
-            state = self._call("GET", f"/v1/jobs/{urllib.parse.quote(job_id)}")
+            try:
+                state = self._call("GET", f"/v1/jobs/{urllib.parse.quote(job_id)}")
+                failures = 0
+            except LabError:
+                failures += 1
+                if failures > POLL_RETRIES:
+                    raise
+                time.sleep(min(self.poll_s * 2 ** failures, 30))
+                continue
             if state.get("status") in TERMINAL:
                 return state
             time.sleep(self.poll_s)
-        raise LabError("E_BACKEND_UNAVAILABLE", "Hardware job did not finish in time", 4)
+        raise HardwareTimeout("E_BACKEND_UNAVAILABLE", f"Hardware job did not finish within {self.timeout_s:g} s", 4)
 
     def execute(self, root, run, spec, requests, cancelled=lambda: False):
         job = self.submit(run, spec, requests)
-        state = self.wait(job, cancelled)
+        try:
+            state = self.wait(job, cancelled)
+        except BaseException:
+            self.cancel(job)
+            raise
         if state["status"] != "succeeded":
             raise LabError("E_BACKEND_UNAVAILABLE", f"Hardware job {job} {state['status']}: {str(state.get('error', ''))[:300]}", 4)
         try:
             record = MeasurementRecord.model_validate(state.get("result"))
         except ValidationError as error:
             raise LabError("E_MOCK_INVALID", "Hardware result violates mlab.executor.v1: " + str(error).splitlines()[0], 4) from None
-        expected = {r["request_id"] for r in requests}
-        require({o.get("request_id") for o in record.observations} == expected, "E_MOCK_INVALID",
+        expected = Counter(r["request_id"] for r in requests)
+        require(Counter(o.get("request_id") for o in record.observations) == expected, "E_MOCK_INVALID",
                 "Hardware result must report every request exactly once", 4)
         return job, record

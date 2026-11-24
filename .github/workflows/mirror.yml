@@ -55,7 +55,7 @@ jobs:
         if: steps.key.outputs.present == 'true'
         env:
           GIT_SSH_COMMAND: ssh -i ~/.ssh/mirror_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
-        run: scripts/mirror/push.sh "${{ matrix.prefix }}"
+        run: scripts/mirror/push.sh "${{ matrix.prefix }}" ${{ github.ref_type == 'tag' && '--tags-only' || '' }}
       - name: Report a rejected push
         if: failure()
         env:

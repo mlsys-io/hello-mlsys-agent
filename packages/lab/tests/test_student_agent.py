@@ -54,9 +54,18 @@ def message(content=None, tool_calls=None, finish="stop"):
 
 
 def test_no_codex_is_left_in_the_package():
+    assert not [p for p in (ROOT / "src").rglob("*codex*.py")]
     for path in (ROOT / "src").rglob("*.py"):
-        assert "codex" not in path.read_text(encoding="utf-8").lower(), path
+        text = path.read_text(encoding="utf-8")
+        assert "codex_client" not in text and "from .codex" not in text and "from ..codex" not in text, path
     assert not list((ROOT / "agent/profiles").glob("codex-*.json"))
+
+
+def test_courses_and_workspaces_made_for_codex_still_open(capsys):
+    assert load_profile("codex-luna")["id"] == DEFAULT_PROVIDER
+    assert "removed with Codex" in capsys.readouterr().err
+    from mlab.terminal import main
+    assert main([]) == 2 and "./claude" in capsys.readouterr().err
 
 
 def test_default_workspace_uses_claude_code_on_qwen_without_endpoint_variables(workspace_path, monkeypatch):

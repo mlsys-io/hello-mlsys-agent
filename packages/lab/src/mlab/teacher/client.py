@@ -68,6 +68,8 @@ class TeacherClient:
                 raise LabError("E_BACKEND_UNAVAILABLE", "The teacher model did not return a JSON object", 4) from None
             except (OSError, urllib.error.URLError):
                 raise LabError("E_BACKEND_UNAVAILABLE", "Teacher model unreachable; check MLAB_TEACHER_BASE_URL", 4) from None
+            except (KeyError, IndexError, TypeError):
+                raise LabError("E_BACKEND_UNAVAILABLE", "The teacher endpoint did not return a chat completion", 4) from None
         raise LabError("E_BACKEND_UNAVAILABLE", "The teacher model did not return a JSON object", 4)
 
     def _post(self, body):

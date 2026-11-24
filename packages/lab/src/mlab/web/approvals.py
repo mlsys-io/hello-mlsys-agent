@@ -6,9 +6,11 @@ from ..core.metrics import get_metric
 from ..core.workspace import RUN_ID, comments, hypothesis_parts, margin
 
 GATED = {("workflow", "approve"): "workflow_approve", ("workflow", "decide"): "workflow_decide", ("workflow", "unlock"): "workflow_unlock",
-         ("measure", "approve"): "measure_approve", ("measure", "unlock"): "measure_unlock", ("conclude", None): "conclude"}
+         ("measure", "approve"): "measure_approve", ("measure", "unlock"): "measure_unlock", ("conclude", None): "conclude",
+         ("ask", None): "teacher_ask"}
 TITLES = {"workflow_approve": "Approve the plan", "workflow_decide": "Confirm the decision", "workflow_unlock": "Unlock the round",
-          "measure_approve": "Approve the measurement", "measure_unlock": "Unlock the measurement", "conclude": "Submit the conclusion"}
+          "measure_approve": "Approve the measurement", "measure_unlock": "Unlock the measurement", "conclude": "Submit the conclusion",
+          "teacher_ask": "Ask the teacher"}
 # Anywhere in the text, so that quoting (bash -c '…'), backticks or eval cannot hide a gated command from the token check.
 PATTERNS = {kind: re.compile(r"\bmlab\b.*?\b" + group + (r"\s+" + action if action else "") + r"\b", re.S) for (group, action), kind in GATED.items()}
 OPERATORS = {"&&", "||", ";", "|", "&", ">", ">>", "<", "(", ")", ";;", "|&"}
@@ -149,6 +151,12 @@ def summarize(lab, kind, args):
                 will_fail = will_fail or f"Measurement {current['id']} has not finished"
             effects = ["The conclusion, its basis and the evidence runs are recorded, and the report is updated",
                        "Exploration can continue; a later submission replaces this one"]
+        elif kind == "teacher_ask":
+            from ..teacher.coach import DEFAULT_QUESTIONS, history
+            used = sum(1 for entry in history(lab.root) if entry.get("kind") == "ask")
+            facts = [["Question", short(str(args.get("id", "")))], ["Teacher questions used", str(used)]]
+            effects = [f"Uses one teacher question (default budget {DEFAULT_QUESTIONS} per task)",
+                       "The teacher sees your records but never holdout workloads, and will not hand over a configuration"]
         elif kind in {"workflow_unlock", "measure_unlock"}:
             target = lab.workflow() if kind == "workflow_unlock" else lab.measurement()
             record = target["id"]

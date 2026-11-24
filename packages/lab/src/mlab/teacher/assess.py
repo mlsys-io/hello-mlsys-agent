@@ -36,9 +36,11 @@ def reference_for(lab):
     profile = lab.config.get("simulator_profile") or "none"
     name = f"{lab.task['id']}-{profile}.json"
     try:
-        return json.loads(resources.files("mlab.teacher").joinpath("reference", name).read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError):
+        reference = json.loads(resources.files("mlab.teacher").joinpath("reference", name).read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, ValueError):
         return None
+    best = reference.get("best") or {}
+    return reference if type(best.get("value")) in {int, float} else None
 
 
 def objective_of(lab, runs):
@@ -128,8 +130,10 @@ def deterministic(lab, rubric):
                 why = "The selected configuration does not meet the performance constraints in development runs."
             elif direction == "satisfy":
                 why = "The selected configuration meets every performance constraint in development runs."
-            else:
+            elif type(selected_value) in {int, float} and type(best) in {int, float}:
                 why = f"{facts['objective']['metric']} {selected_value:.4g} vs {facts['objective']['basis']} {best:.4g}."
+            else:
+                why = f"No numeric {facts['objective']['metric']} to compare for the selection or the {facts['objective']['basis']}."
         else:
             raise LabError("E_SCHEMA", f"Unknown deterministic criterion {criterion['id']}", 2)
         scores[criterion["id"]] = {"score": score, "rationale": why, "evidence": [r["id"] for r in selected_dev]}

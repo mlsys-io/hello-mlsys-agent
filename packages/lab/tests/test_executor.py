@@ -72,3 +72,35 @@ def test_measurement_record_contract():
     with pytest.raises(ValueError):
         MeasurementRecord.model_validate({"observations": [{"request_id": "a"}], "identity": {**IDENTITY, "devices": ["toy"]},
                                           "source": {"kind": "measured", "reference": "r"}})
+
+
+def test_a_duplicated_observation_is_refused(tmp_path):
+    class Duplicating(FakeExecutor):
+        def result(self, body):
+            record = super().result(body)
+            record["observations"] = record["observations"][:-1] + [record["observations"][0]]
+            return record
+    service = Duplicating()
+    try:
+        with pytest.raises(LabError):
+            demo(tmp_path / "ws", "9.2", "fixture", hardware_url=service.url)
+    finally:
+        service.close()
+    [(run, _)] = hardware_runs(tmp_path / "ws")
+    assert run["status"] == "failed"
+
+
+def test_a_job_past_its_deadline_is_cancelled_and_times_out():
+    from mlab.executors.remote import HardwareTimeout, RemoteExecutor
+    service = FakeExecutor()
+    try:
+        executor = RemoteExecutor(service.url, poll_s=0.05, timeout_s=0.3)
+        job = executor.submit({"id": "hw_0001", "spec_hash": "sha256:x"}, {"task": "9.2", "candidate_id": "c"},
+                              [{"request_id": "a", "output_tokens_target": 1}])
+        service.jobs[job]["status"] = "running"  # never finishes
+        with pytest.raises(HardwareTimeout):
+            executor.wait(job)
+        executor.cancel(job)
+        assert service.jobs[job]["status"] == "cancelled"
+    finally:
+        service.close()

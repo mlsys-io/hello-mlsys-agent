@@ -336,6 +336,9 @@ def quality(root, spec):
 
 
 def coverage(run, spec, requests):
+    if run["backend"] == "remote":
+        return {"in_domain": True, "extrapolated": [], "assumptions": [
+            "Measured by a GPU sandbox over mlab.executor.v1; see measurement.json for its declared source and identity."]}
     if run["role"] == "hardware":
         return {"in_domain": True, "extrapolated": [], "assumptions": [
             "Hardware stand-in: the numbers are made up, not measured on real hardware.",

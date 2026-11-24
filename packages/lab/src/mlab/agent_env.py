@@ -41,7 +41,15 @@ def child_environment(model, url, token, key_env, config_dir, auth_mode="bearer"
     return env
 
 
+# Profiles that existed before Codex was removed; courses and workspaces made with them keep working.
+REMOVED_PROVIDERS = {"codex-luna": DEFAULT_PROVIDER, "codex-soc-qwen": DEFAULT_PROVIDER}
+
+
 def load_profile(name):
+    if name in REMOVED_PROVIDERS:
+        import sys
+        print(f"mlab: provider {name} was removed with Codex; using {REMOVED_PROVIDERS[name]} (Claude Code).", file=sys.stderr)
+        name = REMOVED_PROVIDERS[name]
     path = inside(ROOT / "agent/profiles", f"{name}.json")
     if not path.is_file():
         raise LabError("E_SCHEMA", f"unknown provider profile {name}", 2)

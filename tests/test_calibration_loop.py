@@ -113,8 +113,31 @@ def test_sandbox_measurements_export_into_a_dataset(loop, tmp_path):
     [path] = exported["datasets"]
     dataset = json.loads(Path(path).read_text())
     assert dataset["identity"] == FIXTURE["identity"] and dataset["source"]["kind"] == "test_fixture"
-    assert len(dataset["records"]) == 16 and all(r["record_id"].startswith("hw_0001:") for r in dataset["records"])
+    assert len(dataset["records"]) == 16 and all(r["record_id"].split("/")[1].startswith("hw_0001:") for r in dataset["records"])
     entry = loop.ingest(path)
     assert entry["records"] == 16 and entry["holdout_records"] == 4  # the sandbox's declared holdout survives export
     strict = Loop(loop.root, allow_fixture=False)
     assert strict.export([tmp_path / "ws"], tmp_path / "strict") == {"datasets": []}  # fixtures need the explicit flag
+
+
+def test_two_workspaces_export_without_colliding_ids(loop, tmp_path):
+    from mlab.cli import demo
+    from fake_executor import FakeExecutor
+
+    class Sandbox(FakeExecutor):
+        def result(self, body):
+            record = super().result(body)
+            record["identity"] = {**record["identity"], "simulator_identity": FIXTURE["identity"]}
+            record["step_records"] = grid()["records"]
+            return record
+
+    sandbox = Sandbox(kind="test_fixture")
+    try:
+        for name in ("a", "b"):
+            demo(tmp_path / name, "9.2", "fixture", hardware_url=sandbox.url)
+    finally:
+        sandbox.close()
+    [path] = loop.export([tmp_path / "a", tmp_path / "b"], tmp_path / "export")["datasets"]
+    records = json.loads(Path(path).read_text())["records"]
+    assert len(records) == 32 and len({r["record_id"] for r in records}) == 32
+    assert loop.ingest(path)["records"] == 32

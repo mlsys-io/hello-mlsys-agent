@@ -10,6 +10,7 @@ from .. import __version__
 from ..contracts import Candidate, Capabilities, MeasurementPlan, Plan, RequestObservation, RunResult, RunSpec, TaskDefinition
 from ..core.io import ROOT, NOTICE, TERMINAL, LabError, atomic, claude_install, claude_logged_in, hashed, load, pinned_claude_version, require
 from ..core.student import log_prompt
+from ..gateway import GatewayError
 from ..core.workspace import RUN_ID, Lab, find_workspace, initialize
 
 MEASUREMENT_COMMANDS = {"measure", "align"}
@@ -181,14 +182,15 @@ def doctor(web=False, agent="sdk", provider=None, live=False, workspace=None):
 def auto_assess(root):
     """Grade a new conclusion when a teacher is reachable; a teacher failure never undoes the conclusion."""
     import os
-    from ..teacher.client import configuration
-    if not (os.environ.get("MLAB_TEACHER_URL") or configuration()):
-        return {"status": "skipped", "say": "No teacher configured; run mlab assess once MLAB_TEACHER_* is set."}
-    from ..teacher.relay import teacher
     try:
+        from ..teacher.client import configuration
+        if not (os.environ.get("MLAB_TEACHER_URL") or configuration()):
+            return {"status": "skipped", "say": "No teacher configured; run mlab assess once MLAB_TEACHER_* is set."}
+        from ..teacher.relay import teacher
         return {"status": "graded", **teacher(root, "/assess", {})}
-    except LabError as error:
-        return {"status": "failed", "error": str(error), "say": "The conclusion is saved; run mlab assess to retry."}
+    except Exception as error:  # the conclusion is already committed; grading must not report it as rejected
+        return {"status": "failed", "error": f"{type(error).__name__}: {error}"[:400],
+                "say": "The conclusion is saved; run mlab assess to retry."}
 
 
 def finish(lab, wait, label):
@@ -466,7 +468,9 @@ def main(argv=None):
             lab.store.project()
         emit(output, bool(args and args.command == "next" and args.hook), lab.root if lab else None)
         return 0
-    except (LabError, ValidationError, ValueError, KeyError, TypeError, OSError, yaml.YAMLError) as error:
+    except (LabError, GatewayError, ValidationError, ValueError, KeyError, TypeError, OSError, yaml.YAMLError) as error:
+        if isinstance(error, GatewayError):
+            error = LabError("E_BACKEND_UNAVAILABLE", str(error), 4)
         if not isinstance(error, LabError):
             error = LabError("E_SCHEMA", str(error)[:350], 2)
         if lab:

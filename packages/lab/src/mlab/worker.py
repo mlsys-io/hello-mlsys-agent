@@ -119,7 +119,13 @@ def measure_remotely(root, run_id, run, spec, config, store):
     service = config["hardware_service"]
     executor = RemoteExecutor(service["base_url"], poll_s=service.get("poll_s", 2.0), timeout_s=config["run_timeout_s"])
     stopped = lambda: store.get("run", run_id)["status"] in {"cancelled", "timed_out", "failed"}
-    job, record = executor.execute(root, run, spec, requests, cancelled=stopped)
+    from .executors.remote import HardwareTimeout
+    try:
+        job, record = executor.execute(root, run, spec, requests, cancelled=stopped)
+    except HardwareTimeout as error:
+        finalize(root, run_id, "timed_out", "timeout", [], {}, [str(error), "The sandbox job was cancelled."],
+                 {"source": "remote hardware executor", "endpoint": service["base_url"]})
+        return
     inputs = {row["request_id"]: row for row in requests}
     rows = [RequestObservation(**{**observation, "depends_on": inputs[observation["request_id"]].get("depends_on", []),
                                   "gap_after_deps_ms": inputs[observation["request_id"]].get("gap_after_deps_ms", 0)}).model_dump()

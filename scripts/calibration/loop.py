@@ -5,7 +5,8 @@
                                               (groups named holdout* are the declared holdout; else a seeded grouped split)
     loop.py evaluate SHA                      fit a candidate on the train split; score it and the current Profile on the holdout
     loop.py promote SHA                       evaluate, and on a pass write calibration/profiles/<key>/vN.json + CURRENT
-    loop.py verify                            CI: every ledger entry's files are intact and every promotion re-passes its gate
+    loop.py verify                            CI: every ledger entry's files and Profiles match their recorded hashes
+                                              and CURRENT names the newest promotion (it does not refit)
 
 Holdout records never enter a fit. The current Profile is replaced only by a candidate that meets the budgets in
 calibration/budgets.yaml and does not regress on the same holdout. Test-fixture data needs --allow-test-fixture
@@ -84,7 +85,8 @@ class Loop:
                 identity = record["identity"].get("simulator_identity")
                 if not identity or not record.get("step_records"):
                     continue
-                run = record_path.parent.name
+                # Run ids restart in every workspace, so the prefix carries the workspace too.
+                run = hashlib.sha256(str(workspace.resolve()).encode()).hexdigest()[:8] + "/" + record_path.parent.name
                 key = self.identity_key(identity)
                 bucket = groups.setdefault(key, {"identity": identity, "kinds": set(), "references": [], "records": []})
                 bucket["kinds"].add(kind)

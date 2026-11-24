@@ -26,7 +26,8 @@
       "Bash(mlab *measure approve*)",
       "Bash(mlab *measure unlock*)",
       "Bash(mlab *conclude*)",
-      "Bash(mlab ask*)"
+      "Bash(mlab ask*)",
+      "Bash(mlab * ask *)"
     ],
     "deny": [
       "Edit(/task/**)",

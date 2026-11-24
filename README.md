@@ -57,6 +57,28 @@ Profile only if it beats the current one on that holdout and stays within the er
 Bring your own agent if you prefer: the workspace contract is `AGENTS.md` plus the `mlab` CLI. Other Claude Code
 model profiles live in `packages/lab/agent/profiles/`. See the [lab README](packages/lab/README.md) for details.
 
+## Tool image and jobs
+
+Every computation is also a stateless job (`mlab.jobs.v1`, JSON in and out), so a laptop, CI or a cluster job
+runner execute the same code:
+
+| Job | Input | Output |
+| --- | --- | --- |
+| `simulate` | `{"requests": [<mlab.simulator.v1 request text>, ...]}` | each response exactly as `POST /v1/simulate` returns it |
+| `sweep` | `{"task": "9.2"}` | the reference optimum for the exercise profile |
+| `calibrate` | train and holdout datasets, the current Profile, a version | the gate's decision and the fitted Profile |
+| `measure` | reserved for GPU sandbox measurements | |
+
+```bash
+python -m mlab.jobs simulate < payload.json                                   # in the workspace
+docker run --rm -i ghcr.io/mlsys-io/hello-mlsys-agent:<tag> simulate < payload.json
+```
+
+Tags `vX.Y.Z` publish the image to GHCR (`.github/workflows/image.yml`); deployments pin its digest. A job
+runner can also import `mlab.jobs.run(name, payload_text)` inside the image. Teacher prompts
+(`packages/lab/src/mlab/teacher/prompts/`) and rubrics (`packages/lab/tasks/*/rubric.yaml`) are data files, so
+other front ends can reuse them from a pinned tag.
+
 ## Development
 
 ```bash

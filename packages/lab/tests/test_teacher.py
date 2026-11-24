@@ -200,3 +200,39 @@ def test_launcher_reports_configuration_errors_without_a_traceback(tmp_path, mon
     monkeypatch.setattr("mlab.launch.require_pinned_claude", lambda: "/bin/true")
     assert main(["--workspace", str(tmp_path / "ws")]) != 0
     assert "HTTPS" in capsys.readouterr().err
+
+
+def test_the_course_page_reaches_the_teacher_through_a_relay_after_the_students_card(concluded, monkeypatch):
+    import asyncio
+    from labtest import make_runtime
+    from mlab.web import teachers
+    from mlab.web.lab_tools import LabTools
+    fake, _ = teacher(coach_reply("Look at queueing first."))
+    monkeypatch.setenv("MLAB_TEACHER_BASE_URL", fake.url)
+    monkeypatch.setenv("MLAB_TEACHER_API_KEY", TEACHER_KEY)
+    teachers.configure()
+    monkeypatch.delenv("MLAB_TEACHER_BASE_URL")  # the server sanitizes its environment after capturing the config
+    monkeypatch.delenv("MLAB_TEACHER_API_KEY")
+    decisions = []
+
+    async def scenario():
+        runtime = make_runtime(concluded)
+        runtime.exploration = True
+
+        async def permission(name, data):
+            decisions.append(data["command"])
+            return {"allow": len(decisions) == 1, "message": "The student declined."}
+        runtime.permission = permission
+        tools = LabTools(runtime)
+        answered = await tools.execute("Bash", {"command": 'mlab ask "Why is p99 high?"'})
+        declined = await tools.execute("Bash", {"command": 'mlab ask "Again?"'})
+        return answered, declined
+    try:
+        (answer, failed), (refusal, refused) = asyncio.run(scenario())
+    finally:
+        teachers.close_all()
+        teachers._config = None
+        fake.close()
+    assert not failed and "queueing" in answer and decisions == ['mlab ask "Why is p99 high?"', 'mlab ask "Again?"']
+    assert refused and "declined" in refusal
+    assert fake.requests[-1]["auth"] == "Bearer " + TEACHER_KEY

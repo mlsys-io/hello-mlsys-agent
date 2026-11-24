@@ -116,6 +116,8 @@ def agent_factory(kind, provider=None):
 def create_app(root, agent="fake", provider=None, opening=True, auto_continue=False, watch_interval=1.0):
     course = Course(root)
     bus = Bus()
+    from . import teachers
+    teachers.configure()  # before the agent factory removes provider variables from this process
     factory = agent_factory(agent, provider)
     runtimes = {}
 

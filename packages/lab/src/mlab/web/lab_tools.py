@@ -75,7 +75,10 @@ EXPLORATION = ("You are the hello-mlsys experiment assistant. The student contro
     "The legacy beyond_noise flag describes a fixed-threshold paired-request shift, not a statistical noise test or resampling-interval comparison. "
     "It cannot establish significance, stability, or optimistic/pessimistic simulator bias, especially against synthetic data. "
     "Missing service time cannot be reconstructed from end-to-end latency or used to claim a measured critical path. Quality marked not_evaluated is unknown. "
-    "Ask clarifying questions in ordinary chat. Do not demand a hypothesis or formal decision before helping.\n")
+    "Ask clarifying questions in ordinary chat. Do not demand a hypothesis or formal decision before helping. "
+    "The lab has a teacher. Only when the student asks you to consult it, run Bash 'mlab ask \"<their question as written>\"'; "
+    "the student confirms it on a card. Never consult the teacher on your own or to obtain a configuration. Show its answer "
+    "and follow-up question unchanged. 'mlab assess' grades the latest conclusion against task/rubric.yaml.\n")
 
 
 def tool(name, description, properties, required):
@@ -319,7 +322,8 @@ class LabTools:
                 plain = (tokens[:1] == ["mlab"] and not approvals.OPERATORS.intersection(tokens)
                          and "$(" not in command and "`" not in command and "\n" not in command
                          and not any(x.startswith("--workspace") for x in tokens))
-                allowed = {"next", "task", "workflow", "measure", "align", "conclude", "run", "compare", "lint", "validate", "report", "history", "show"}
+                allowed = {"next", "task", "workflow", "measure", "align", "conclude", "run", "compare", "lint", "validate", "report",
+                           "history", "show", "ask", "assess"}
                 if not plain or len(tokens) < 2 or tokens[1] not in allowed:
                     if exploratory:
                         return ('No shell or invented mlab commands are available. For drafts use Explore(action="list"), then '
@@ -327,7 +331,8 @@ class LabTools:
                                 'Read commands include "mlab task show", "mlab history", and "mlab run show sim_0001".', True)
                     return "Run one mlab command in this workspace, with no shell syntax or workspace override.", True
                 if exploratory:
-                    read_only = tokens[1] in {"task", "history", "show", "compare", "align"} or (tokens[1] in {"run", "workflow", "measure"} and tokens[2:3] in [["show"], ["status"]])
+                    # ask goes through the student's card below; assess grades an existing conclusion.
+                    read_only = tokens[1] in {"task", "history", "show", "compare", "align", "ask", "assess"} or (tokens[1] in {"run", "workflow", "measure"} and tokens[2:3] in [["show"], ["status"]])
                     if not read_only:
                         return "Use Explore simulate for requested simulations or Explore measure for an in-chat hardware confirmation. Bash is read-only in this conversation.", True
                 if found["kind"] and "--help" not in tokens:
@@ -335,7 +340,8 @@ class LabTools:
                     if not decision["allow"]:
                         return decision["message"], True
                 env = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC_", "CLAUDE"))}
-                env.update({"PATH": tool_path(), "PYTHONUTF8": "1", "MLAB_PROMPT_SOURCE": "web"})
+                from . import teachers
+                env.update({"PATH": tool_path(), "PYTHONUTF8": "1", "MLAB_PROMPT_SOURCE": "web", **teachers.env_for(self.root)})
                 self.process = await asyncio.create_subprocess_exec(sys.executable, "-m", "mlab", *shlex.split(command)[1:],
                     cwd=self.root, env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
                 try:

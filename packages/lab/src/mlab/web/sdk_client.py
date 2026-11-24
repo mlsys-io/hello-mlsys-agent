@@ -195,7 +195,8 @@ def factory(provider=None, env=None):
             env.update(dict.fromkeys(MODEL_VARIABLES, resolved["model"]))
         own_config = bool(token)
     def make(runtime):
-        task_env = dict(env)
+        from . import teachers
+        task_env = {**env, **teachers.env_for(runtime.root)}
         if own_config:
             # With an API key, each task gets its own Claude Code config directory, away from the student's own.
             directory = runtime.root / ".mlab/web/claude-config"

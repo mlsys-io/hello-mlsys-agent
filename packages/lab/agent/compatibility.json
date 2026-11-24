@@ -1,0 +1,56 @@
+{
+  "pinned_claude_version": "2.1.317",
+  "verified": {
+    "2.1.74": [
+      "smoke tool loop with local fake API"
+    ],
+    "2.1.317": [
+      "two-round classroom with local fake API",
+      "LLM backend via local fake API",
+      "OpenAI adapter classroom via local fake API",
+      "interactive claude in an mlab init workspace with ask dialogs via local fake API",
+      "two rounds with revision on the interactive path with a real model",
+      "classroom and LLM backend through account login with a real model"
+    ],
+    "2.1.318": [
+      "third-party API smoke tool loop",
+      "two-round classroom with local fake API",
+      "LLM backend via local fake API",
+      "native Messages classroom via local fake API"
+    ]
+  },
+  "note": "Observed integration evidence, not a guarantee for other models or versions. No automatic upgrade is performed.",
+  "codex": {
+    "pinned_version": "0.167.2",
+    "model": "gpt-6-luna",
+    "protocol": "App Server JSONL v2 with dynamic tools",
+    "evidence": [
+      "real CLI App Server initialization and thread creation with five dynamic tools, isolated state and ephemeral authentication",
+      "offline JSONL protocol tests for approval, question answers, resume, usage, interruption, process failure and tool boundaries",
+      "default workspace, terminal launcher and mock-estimator cache checks",
+      "real GPT-6 Luna completion with isolated state and no credential file",
+      "two-round Chinese web classroom recording with real GPT-6 Luna, page forms and confirmation cards: mock_only, r002/c16, hardware stand-in budget 6/8"
+    ],
+    "verified_on": "2026-11-12",
+    "limitations": "Recorded classroom evidence uses the fixture and hardware stand-in, not real GPU measurements. App Server dynamic tools remain experimental; these observations do not guarantee other versions or all teaching scenarios. USD cost is not reported.",
+    "providers": {
+      "soclaas": {
+        "profile": "codex-soc-qwen",
+        "model": "qwen3.8:27b",
+        "cli_version": "0.167.2",
+        "wire_api": "responses",
+        "context_window": 262144,
+        "reasoning_effort": "low",
+        "verified_on": "2026-11-12",
+        "evidence": [
+          "live model catalog, Responses function call and replayed function result",
+          "real pinned Codex App Server streaming, Read tool and same-thread follow-up with SoC Qwen",
+          "157 offline regression tests passed; 6 optional tests skipped",
+          "invalid draft YAML no longer breaks progress or record views",
+          "real Chinese two-round web recording: qwen3.8:27b, 15 main-session turns, mock_only r002/c16, 6/8 hardware stand-in runs, no browser errors or API submission fallbacks; full MP4 decode passed"
+        ],
+        "limits": "The guide lists 90 requests/minute; the actual key budget endpoint timed out. Shared local inference admission is set to one, excluding unrelated applications using the key."
+      }
+    }
+  }
+}

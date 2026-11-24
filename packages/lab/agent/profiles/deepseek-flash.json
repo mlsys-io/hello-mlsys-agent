@@ -1,6 +1,7 @@
 {
   "id": "deepseek-flash",
   "tier": "Main evaluation model",
+  "protocol": "anthropic",
   "api_key_env": "DEEPSEEK_API_KEY",
   "env": {
     "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",

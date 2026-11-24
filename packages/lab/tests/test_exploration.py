@@ -15,7 +15,7 @@ from mlab.core.workspace import Lab
 from mlab.web import exploration
 from mlab.web.agent import TaskRuntime
 from mlab.web.bus import Bus
-from mlab.web.codex_client import LabTools
+from mlab.web.lab_tools import LabTools
 from mlab.web.course import Course
 from mlab.web.server import create_app
 
@@ -330,7 +330,7 @@ def test_conversation_execution_cannot_target_another_session(workspace_path, ot
 
 
 def test_assistant_can_measure_approved_configurations_from_two_experiments_in_one_session(workspace_path):
-    from test_codex import until
+    from labtest import until
     course, root = setup(workspace_path)
     first = draft(course, root, title="First comparison")
     candidate = copy.deepcopy(first["candidates"][0])
@@ -506,88 +506,6 @@ def test_exploration_activity_persists_only_allowed_actions_in_chat_history(work
     assert all(set(entry) <= {"id", "at", "role", "text", "tool", "action", "result", "is_error"} for entry in entries)
     assert "PRIVATE_" not in json.dumps(entries)
     assert "PRIVATE_" not in runtime.chat.path.read_text()
-
-
-def test_codex_switches_to_exploration_tools_and_creates_an_editable_proposal(workspace_path):
-    from test_codex import make_runtime, until
-    course, root = setup(workspace_path)
-    proposal = draft(course, root)
-    (root / ".mlab/test-proposal.json").write_text(json.dumps(proposal))
-    async def scenario():
-        runtime = make_runtime(root)
-        try:
-            await runtime.say("hello")
-            await until(lambda: not runtime.busy())
-            assert runtime.status == "idle"
-            runtime.exploration = True
-            await runtime.restart()
-            await runtime.say("explore proposal")
-            await until(lambda: not runtime.busy())
-            assert runtime.status == "idle" and not runtime.cards
-            assert runtime.meta["interaction"] == "exploration"
-            messages = runtime.chat.read()
-            assert any(entry.get("is_error") and "mlab workflow submit" in entry["text"] for entry in messages)
-        finally:
-            await runtime.stop()
-    asyncio.run(scenario())
-    assert load(root / ".mlab/codex/test-tools.json") == ["Bash", "Explore", "Read"]
-    view = exploration.task_view(course, "9.2")
-    assert len(view["experiments"]) == 2 and not view["runs"]
-    assert view["experiments"][-1]["author"] == "assistant" and view["experiments"][-1]["editable"]
-    assert not (root / "analysis/note.md").exists()
-
-
-@pytest.mark.parametrize("previous_revision,changed_policy", [(None, "instructions"), ("obsolete", "tools")])
-def test_exploration_reconnect_migrates_changed_policies_and_resumes_matching_policies(workspace_path, monkeypatch, previous_revision, changed_policy):
-    from test_codex import make_runtime
-    from mlab.web import codex_client
-    course, root = setup(workspace_path)
-    original = draft(course, root)
-    runtime = make_runtime(root)
-    message = runtime.add("student", "Keep this experiment and our earlier discussion.")
-    runtime.meta.update({"session": "test-codex-session", "backend": "codex", "model": codex_client.MODEL,
-                         "interaction": "exploration", "input_tokens": 77, "codex_usage_seen": {"inputTokens": 77}})
-    if previous_revision is not None:
-        runtime.meta["exploration_revision"] = previous_revision
-    runtime.save_meta()
-
-    async def connect():
-        current = make_runtime(root)
-        current.exploration = True
-        client = current.factory(current)
-        methods = []
-        request = client.server.request
-        async def tracked_request(method, params):
-            if method.startswith("thread/"):
-                methods.append(method)
-            return await request(method, params)
-        client.server.request = tracked_request
-        try:
-            await client.connect(current.meta["session"])
-            assert current.meta["input_tokens"] == 77
-            assert "codex_usage_seen" not in current.meta
-            assert message in current.chat.read()
-            assert load(current.meta_path)["exploration_revision"] == current.meta["exploration_revision"]
-            return methods, current.meta["exploration_revision"]
-        finally:
-            await client.disconnect()
-
-    async def scenario():
-        methods, revision = await connect()
-        assert methods == ["thread/start"] and re.fullmatch(r"sha256:[a-f0-9]{64}", revision)
-        assert await connect() == (["thread/resume"], revision)
-        if changed_policy == "instructions":
-            monkeypatch.setattr(codex_client, "EXPLORATION", codex_client.EXPLORATION + "Keep comparisons focused.\n")
-        else:
-            tools = copy.deepcopy(codex_client.TOOLS)
-            tools[0]["inputSchema"]["properties"]["title"]["description"] += " Use a short name."
-            monkeypatch.setattr(codex_client, "TOOLS", tools)
-        methods, updated_revision = await connect()
-        assert methods == ["thread/start"] and updated_revision != revision
-        assert await connect() == (["thread/resume"], updated_revision)
-
-    asyncio.run(scenario())
-    assert exploration.task_view(course, "9.2")["experiments"] == [original]
 
 
 def test_workbench_api_is_usable_without_a_model(workspace_path):
@@ -805,30 +723,24 @@ def test_course_storage_scope_is_stable_and_differs_between_directories(workspac
     assert scopes[0] == scopes[2] and scopes[0] != scopes[1]
 
 
-def test_legacy_sdk_cannot_start_from_the_workbench_but_direct_controls_work(workspace_path, monkeypatch):
-    from mlab.web import server, sdk_client
+def test_sdk_workbench_chat_serves_the_lab_tools_over_in_process_mcp(workspace_path):
+    from mlab.web import sdk_client
     course, root = setup(workspace_path)
-    calls = []
-    def forbidden_client(runtime):
-        calls.append(runtime)
-        raise AssertionError("Legacy SDK must not start in the workbench")
-    monkeypatch.setattr(sdk_client, "factory", lambda provider: forbidden_client)
-    with TestClient(create_app(workspace_path, "sdk", opening=False)) as web:
-        web.post("/api/workbench/tasks/9.2/open", json={})
-        reply = web.post("/api/workbench/sessions/9.2-1/chat", json={"text": "Run an experiment"}).json()
-        assert not reply["ok"] and reply["error"]["code"] == "E_BACKEND_UNAVAILABLE"
-        template = exploration.task_view(course, "9.2")["templates"][0]
-        created = web.post("/api/workbench/sessions/9.2-1/create", json={"title": "Student-controlled", "candidates": [template]}).json()
-        assert created["ok"]
-        submitted = web.post("/api/workbench/sessions/9.2-1/simulate", json={
-            "workflow": created["id"], "revision": created["revision"], "confirm": True}).json()
-        assert submitted["ok"]
-        wait(root, "workflow", created["id"])
     runtime = TaskRuntime(root.name, root, Bus(), lambda _: None, opening=False)
     runtime.exploration = True
-    with pytest.raises(LabError, match="Codex"):
-        server.agent_factory("sdk")(runtime)
-    assert not calls
+    client = sdk_client.SdkAgentClient(runtime, {"PATH": "/usr/bin"})
+    options = client.options(None)
+    assert options.tools == []  # no built-in tools: only the page's lab tools
+    assert options.allowed_tools == ["mcp__lab__Explore", "mcp__lab__Bash", "mcp__lab__Read"]
+    assert options.strict_mcp_config and set(options.mcp_servers) == {"lab"}
+    assert "mcp__lab__Explore" in options.system_prompt and "Explore" in options.system_prompt
+
+    async def scenario():
+        listed = await client.lab_tools.execute("Explore", {"action": "list"})
+        assert not listed[1] and "templates" in listed[0]
+        refused = await client.lab_tools.execute("Bash", {"command": "mlab workflow submit"})
+        assert refused[1] and "read-only" in refused[0]
+    asyncio.run(scenario())
 
 
 def test_saved_run_settings_remain_available_without_a_completed_result(workspace_path, monkeypatch):

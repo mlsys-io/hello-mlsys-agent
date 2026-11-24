@@ -2,13 +2,13 @@
 
 > **Read-only mirror.** This repository is published from [`packages/lab`](https://github.com/mlsys-io/hello-mlsys-agent/tree/main/packages/lab) in [mlsys-io/hello-mlsys-agent](https://github.com/mlsys-io/hello-mlsys-agent). Open issues and pull requests there; commits pushed here directly block the next sync until they are merged back there.
 
-The learning workspace for weeks 6–8 of hello-mlsys, available as a local course page and in the terminal. Students learn through conversation with a Codex assistant using GPT-6 Luna or SoC Qwen 27B: ask about the task, work through an idea, plan and run experiments, investigate earlier results, and compare explanations. Experiment editors, execution history and charts support that conversation, with direct controls available throughout.
+The learning workspace for weeks 6–8 of hello-mlsys, available as a local course page and in the terminal. Students learn through conversation with their own coding agent; the reference agent is Claude Code driving Qwen 3.8 27B: ask about the task, work through an idea, plan and run experiments, investigate earlier results, and compare explanations. Experiment editors, execution history and charts support that conversation, with direct controls available throughout.
 
 The page keeps task and session navigation on the left, task information and evidence in the center, and conversation on the right. Configuration histories, measurement analysis, optional reflections and full reports stay in the workspace. A new conversation starts a clean session; earlier work remains in its original session, and only the task's hardware budget is shared.
 
-Experiments can use simulation or hardware measurement. Simulation has no total run budget, but each batch has a size limit. Measurements share a task budget and currently use a stand-in until the AMD sandbox is connected. The fixture, LLM simulator and stand-in all produce demonstration numbers.
+Experiments can use simulation or hardware measurement. Simulation has no total run budget, but each batch has a size limit. Measurements share a task budget and currently use a stand-in until the AMD sandbox is connected. The fixture, LLM estimator and stand-in produce demonstration numbers; the simulator produces uncalibrated predictions.
 
-The `mlsys` backend connects to MLSys Simulator 1.20.0 through its public HTTP API. The explicit `protocol-v1.20` session profile runs all three task workloads with supported Qwen3 BF16 configurations on RX9070XT; it does not replace the original course baselines. Simulation is uncalibrated, model quality is not evaluated, and sandbox measurements remain synthetic. Modeled memory or request failures remain visible and can be checked on the sandbox after student confirmation. See the [application integration and recordings](integrations/mlsys-simulator/APP_INTEGRATION.zh-CN.md).
+The default `mlsys` backend runs the in-tree MLSys Simulator (`packages/simulator`, 1.24) in-process; `--simulator-url` uses its loopback HTTP service instead, and a standalone checkout without the simulator package falls back to that service. The `protocol-v1.20` session profile (applied by default with `--simulator mlsys`, and disclosed in `task/profile.json`) runs all three task workloads with supported Qwen3 BF16 configurations on RX9070XT; it does not replace the original course baselines. Simulation is uncalibrated, model quality is not evaluated, and sandbox measurements remain synthetic. Modeled memory or request failures remain visible and can be checked on the sandbox after student confirmation. See the [application integration and recordings](integrations/mlsys-simulator/APP_INTEGRATION.zh-CN.md).
 
 | To read about | Go to |
 | --- | --- |
@@ -24,76 +24,79 @@ The `mlsys` backend connects to MLSys Simulator 1.20.0 through its public HTTP A
 
 ## Environment
 
-Linux, Python 3.12. Install [uv](https://docs.astral.sh/uv/) first, then create the environment from the repository root:
+Linux, Python 3.12, [uv](https://docs.astral.sh/uv/) and Node.js/npm (for the pinned Claude Code):
 
 ```bash
 scripts/setup.sh
-source .venv/bin/activate
+source .venv/bin/activate        # in hello-mlsys-agent: the .venv at the repository root
 mlab doctor
 ```
 
-`scripts/setup.sh` installs the Python dependencies and checks Codex 0.167.2. If that version is missing, it installs a project-local copy under `.venv/lib/mlab-codex` using npm. It does not replace a global Codex installation. The supported version is recorded in `agent/compatibility.json`.
+`scripts/setup.sh` installs the Python dependencies and the Claude Code version pinned in `agent/compatibility.json`
+into the environment's `bin/`, without touching a global Claude Code.
 
-The default agent is **Codex / GPT-6 Luna** (`gpt-6-luna`). Each workspace uses its own `.mlab/codex` directory for configuration, conversations, logs and caches. The parent process reads the existing Codex login without changing it and supplies credentials in memory; alternatively set `OPENAI_API_KEY`. No credentials are copied into the workspace. See [Codex integration](docs/codex.md) for isolation, authentication and verification details.
+### The student agent
 
-To use **SoC / Qwen 3.8 27B** with the same pinned Codex, run `scripts/start-soc.sh workspaces/soc-course`. It asks for the key privately if `SOCLAAS_API_KEY` is not set. The `codex-soc-qwen` profile uses SoC's native Responses API, keeps its state inside the workspace, and serializes inference across local lab processes. It does not use the personal Codex login. The SoC limits and setup are described in [Codex integration](docs/codex.md#soclaas--qwen).
+The default profile `qwen3.8-27b` runs **Claude Code on Qwen 3.8 27B** through any OpenAI-compatible chat API
+with function calling: a self-hosted vLLM or SGLang, OpenRouter or a campus service.
+
+```bash
+export QWEN38_BASE_URL=http://127.0.0.1:8000/v1   # ends in /v1
+export QWEN38_MODEL=qwen3.8-27b                   # the name your server serves
+export QWEN38_API_KEY=...                         # if the server needs one
+mlab doctor --live                                # one real function-call round trip
+```
+
+`./claude` in a workspace runs `mlab.launch`. It holds the key, starts a loopback Anthropic-to-OpenAI gateway for
+the session and starts Claude Code against it; Claude Code only sees the gateway URL and a local token. The
+gateway sends Qwen's `enable_thinking` switch (`QWEN38_THINKING=false` turns reasoning off), raises short output
+budgets to `QWEN38_MIN_TOKENS` (default 8192) so reasoning cannot swallow a reply, strips inline `<think>`
+blocks, and reports a reply that ran out of budget instead of returning it empty. Plain `http://` is accepted
+only for loopback and private-network hosts.
+
+Other profiles in `agent/profiles/`: `qwen3.8-27b-anthropic` (a host that serves the Messages API directly),
+`deepseek-flash`, `deepseek-v4-pro`, `qwen3.6-flash` and `claude-haiku` (the Claude Code account login). Pick one
+with `mlab init --provider NAME`. Students may also bring another agent: the workspace contract is `AGENTS.md`
+plus the `mlab` CLI.
+
+## Talking to the agent
+
+```bash
+mlab init --task 9.2 workspaces/my-sla
+cd workspaces/my-sla && ./claude
+```
+
+The workspace's `.claude/settings.json` allows `mlab` commands, asks the student before approvals, decisions,
+unlocks and conclusions, and denies edits to frozen evidence. The first launch asks you to trust the workspace.
+`--simulator fixture` uses scripted mock numbers and `--simulator llm` has a model estimate them (labelled mock).
+The slow flywheel defaults to the hardware stand-in (`--hardware standin`), which creates four kinds of gap by
+fixed rules, so comparing simulation with measurement can be practised before real sandboxes are connected.
 
 ## Course page
 
 ```bash
-mlab web workspaces/my-course --simulator fixture --provider codex-luna
+mlab web workspaces/my-course
 ```
 
-The first run creates the course directory and opens a page served on 127.0.0.1. For a remote machine, use an SSH or editor port forward. Each task opens with its overview and a persistent conversation beside it. Ask a conceptual question without preparing an experiment, request a simulation, or bring earlier evidence from this session into the discussion with **Add from history** or an `@` reference. The assistant can find the session's earlier work even when nothing is attached. Requested sandbox measurements show their configuration, workload and budget for confirmation before execution. Students can also edit and run experiments directly, inspect request timings, compare results and write their own observations. There is no required sequence of questions, experiments or conclusions.
+The first run creates the course directory and opens a page served on 127.0.0.1. For a remote machine, use an SSH or editor port forward. Each task opens with its overview and a persistent conversation beside it. Ask a conceptual question without preparing an experiment, request a simulation, or bring earlier evidence from this session into the discussion with **Add from history** or an `@` reference. Requested sandbox measurements show their configuration, workload and budget for confirmation before execution. Students can also edit and run experiments directly, inspect request timings, compare results and write their own observations.
 
-Use **New conversation** to start a clean session within the same task. Reopen an earlier session from the session list to recover its conversation, drafts and execution records. **Add from history** attaches evidence from the current session. Only the measurement budget remains shared across the task. Chinese/English and light/dark settings are retained in the browser. Add `--port` if the default port is busy.
+The page drives Claude Code through the Agent SDK (`--agent sdk`, the default). In the workbench conversation the built-in tools are off and the page's lab tools (Explore, read-only Bash, paged Read) are served to Claude Code as in-process MCP tools, so confirmations are the same page cards. `--agent fake` is an offline preview with scripted requests. `mlab doctor --web` checks the web dependencies and local TCP access.
 
-The React workbench is included as built static assets. Developers rebuild it with `scripts/build-web.sh`; the toolchain and npm cache stay inside the project. See [Frontend design and verification](docs/web-frontend.md). Configuration records, measurement analysis and full reports open directly in the central pane; `/classic` remains available for compatibility.
-
-`mlab doctor --web` checks the CLI version, authentication availability, web dependencies and local TCP access, without calling a model. `--agent fake` provides an offline preview with scripted simulation and measurement requests; it cannot provide model explanations. Demo steps and the TA checklist are in [Demo steps](docs/demo.md#course-page-demo); the API is in [docs/web-api.md](docs/web-api.md).
-
-The [recording procedure](docs/demo.md#record-the-conversation-experience) produces a local review gallery at `workspaces/studio-review/index.html` and an optional `studio-review.zip` in the same directory. It includes full real SoC conversations, screenshots and normal-speed video; experiment performance remains fixture and stand-in data. The gallery labels missing or partial recordings.
-
-Do not use the same workspace from the course page and the terminal at the same time.
-
-## Talking to the agent directly
-
-The terminal uses the same isolated Codex App Server, with the earlier guided approval flow:
-
-```bash
-mlab init --task 9.2 --simulator fixture --provider codex-luna workspaces/my-sla
-cd workspaces/my-sla && ./codex
-```
-
-`./codex` starts the lab terminal chat. It records your words, keeps the conversation across restarts and asks before approvals, decisions and conclusions. Type `/quit` to exit. It is a lab interface backed by Codex, not the native Codex TUI.
-
-Replace `--simulator fixture` with `--simulator llm` to have the same model estimate performance; the numbers are still labeled mock. The slow flywheel defaults to the hardware stand-in (`--hardware standin`), which creates four kinds of gap by fixed rules, so comparing simulation with measurement can be practiced in the meantime.
-
-Start terminal chat from the repository with:
-
-```bash
-scripts/start-agent.sh --workspace workspaces/my-classroom
-```
-
-The default simulator is the fixture; `--backend llm` uses Codex / GPT-6 Luna for mock estimates. The former stage-by-stage Claude classroom remains in `scripts/qwen_demo.py` as a legacy entry point, not the default launcher.
-
-Claude/Qwen/DeepSeek profiles and their old evidence remain for comparison. The legacy web client requires an explicit `--agent sdk --provider <legacy-profile>` and the `legacy-claude` extra; setup and normal lab runs do not start Claude Code.
+The React workbench is included as built static assets. Developers rebuild it with `scripts/build-web.sh`. See [Frontend design and verification](docs/web-frontend.md). Do not use the same workspace from the course page and the terminal at the same time.
 
 ## Offline checks
 
-To check only the mlab tool workflow (a scripted student goes through one simulation round, validation on the simulator and one measurement, and compares simulation with measurement):
-
 ```bash
-mlab demo --out workspaces/my-first-demo
-```
-
-Run the regression suite with:
-
-```bash
+mlab demo --out workspaces/my-first-demo                     # scripted student, fixture numbers
+mlab demo --simulator mlsys --out workspaces/demo-simulated  # the same walk on the in-tree simulator
 .venv/bin/python -m pytest -q tests
 ```
 
-Codex lifecycle tests use a scripted JSONL protocol peer and run without a model. Legacy tests that execute Claude Code remain opt-in. Passing offline tests does not establish the quality or availability of the real model.
+Tests that execute the real pinned Claude Code against a local fake model are opt-in (`MLAB_RUN_CLAUDE_TESTS=1`).
+Passing offline tests does not establish the quality or availability of the real model.
+
+The recording scripts under `frontend/scripts/record-*.mjs` and the galleries they build document earlier
+Codex-based recordings; they have not been ported to the Claude Code page yet.
 
 ## Repository layout
 

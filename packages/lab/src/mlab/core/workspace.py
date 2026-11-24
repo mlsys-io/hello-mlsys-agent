@@ -87,13 +87,13 @@ def examples_directory(root, task_id):
     return prepared if prepared.is_dir() else ROOT / "examples" / TASKS[task_id]
 
 
-def initialize(destination, task_id, simulator="llm", provider=None, hardware="standin", mode="guided",
+def initialize(destination, task_id, simulator="mlsys", provider=None, hardware="standin", mode="guided",
                simulator_profile=None, simulator_url=None):
+    from ..agent_env import DEFAULT_PROVIDER
     from ..backends.local import ROLES
-    provider = provider or "codex-luna"
+    provider = provider or DEFAULT_PROVIDER
     profile = load(inside(ROOT / "agent/profiles", provider + ".json")) if (ROOT / "agent/profiles" / (provider + ".json")).is_file() else None
     require(profile is not None, "E_SCHEMA", "unknown provider profile", 2)
-    use_codex = profile.get("backend") == "codex"
     require(task_id in TASKS, "E_SCHEMA", "task must be 9.1, 9.2 or 9.3", 2)
     require(mode in MODES, "E_SCHEMA", "mode must be guided or open", 2)
     require(ROLES.get(simulator) == "simulator" and ROLES.get(hardware) == "hardware", "E_SCHEMA", "unknown simulator or hardware backend", 2)
@@ -109,8 +109,7 @@ def initialize(destination, task_id, simulator="llm", provider=None, hardware="s
         require(hashed(inside(source, reference["path"])) == reference["sha256"], "E_FROZEN_CHANGED", "source task file hash mismatch")
     destination.mkdir(parents=True)
     shutil.copytree(source, destination / "task")
-    shutil.copytree(ROOT / "template", destination, dirs_exist_ok=True,
-                    ignore=shutil.ignore_patterns(".claude", "CLAUDE.md") if use_codex else None)
+    shutil.copytree(ROOT / "template", destination, dirs_exist_ok=True)
     catalog = {"models": {m["id"]: m["params_b"] for m in load(ROOT / "catalog/models/sizes.yaml")},
                "hardware": {p.stem: load(p) for p in (ROOT / "catalog/hardware").glob("*.yaml")},
                "infra": {p.stem: load(p) for p in (ROOT / "catalog/infra").glob("*.yaml")}}
@@ -132,11 +131,8 @@ def initialize(destination, task_id, simulator="llm", provider=None, hardware="s
                                               "provider": provider, "mode": mode, "run_timeout_s": 1800, "created_at": now(),
                                               "simulator_profile": simulator_profile, "simulator_service": service,
                                               "fixture_delay_s": 0, "hardware_delay_s": 0})
-    if use_codex:
-        launcher = write_codex_launcher(destination)
-    else:
-        write_local_settings(destination, provider)
-        launcher = write_launcher(destination)
+    write_local_settings(destination, provider)
+    launcher = write_launcher(destination, profile)
     store = Store(destination)
     store.event("workspace_initialized", {"task": task_id, "simulator": simulator, "hardware": hardware, "mode": mode})
     store.put("settings", "task", dict(BLANK))
@@ -150,35 +146,29 @@ def initialize(destination, task_id, simulator="llm", provider=None, hardware="s
 def write_local_settings(destination, provider=None):
     # PATH lets the hooks and the agent's Bash tool find mlab from any
     # terminal, with or without an activated environment. Secrets stay out of this file.
+    from ..agent_env import substitute
     env = {"PATH": tool_path()}
     if provider:
         path = inside(ROOT / "agent/profiles", provider + ".json")
         require(path.exists(), "E_SCHEMA", "unknown provider profile", 2)
-        for key, value in load(path)["env"].items():
-            for variable in re.findall(r"\$\{([^}]+)\}", value):
-                require(os.environ.get(variable), "E_SCHEMA", f"set {variable} before selecting this provider", 2)
-                value = value.replace("${" + variable + "}", os.environ[variable])
-            env[key] = value
+        for key, value in substitute(load(path).get("env", {}), f"the {provider} profile").items():
+            env[key] = str(value)
     # Skills, plugins and connectors from a personal claude.ai account stay out of lab sessions.
     atomic(destination / ".claude/settings.local.json", {"env": env, "syncClaudeAiSkills": False, "syncClaudeAiPlugins": False,
                                                         "disableClaudeAiConnectors": True})
 
 
-def write_codex_launcher(destination):
-    """Use the same isolated App Server and confirmation flow in the terminal."""
-    launcher = destination / "codex"
-    python = sys.executable
-    atomic(launcher, '#!/bin/sh\nexec ' + shlex.quote(python) + ' -m mlab.terminal --workspace ' +
-           shlex.quote(str(destination)) + ' "$@"\n', text=True)
-    launcher.chmod(0o755)
-    return "./codex"
-
-
-def write_launcher(destination):
-    """./claude runs the pinned Claude Code with project settings only and the agent's four tools."""
+def write_launcher(destination, profile=None):
+    """./claude starts the student's Claude Code: directly for an account login, through mlab.launch (which holds
+    the provider key and, for OpenAI-compatible APIs, the loopback gateway) for every keyed profile."""
+    launcher = destination / "claude"
+    if profile and (profile.get("protocol") in {"openai", "anthropic"} or profile.get("api_key_env")):
+        atomic(launcher, "#!/bin/sh\nexec " + shlex.quote(sys.executable) + " -m mlab.launch --workspace " +
+               shlex.quote(str(destination)) + ' "$@"\n', text=True)
+        launcher.chmod(0o755)
+        return "./claude"
     if not project_claude().exists():
         return "claude"
-    launcher = destination / "claude"
     atomic(launcher, f'#!/bin/sh\nexec {shlex.quote(str(project_claude()))} --setting-sources project,local --tools Bash,Read,Edit,Write "$@"\n', text=True)
     launcher.chmod(0o755)
     return "./claude"

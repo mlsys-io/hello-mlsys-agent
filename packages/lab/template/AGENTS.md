@@ -15,7 +15,8 @@ Never run mlab demo inside an actual classroom workflow.
 - Slow flywheel: hardware (a stand-in until the AMD sandbox is connected), limited budget. The student picks
   points, mlab freezes the simulator's predictions and the hardware runs. When the student asks how the results
   compare with the simulator, fetch the pairs and help them read them.
-- Every number here is invented (placeholder numbers). Keep that label; never claim real GPU results.
+- Simulator runs (evidence_level `simulated`) are uncalibrated predictions; fixture, LLM-estimator and stand-in
+  runs (`mock`) are invented placeholder numbers. Keep those labels; never claim real GPU results.
 
 ## Fast flywheel: a simulator round
 

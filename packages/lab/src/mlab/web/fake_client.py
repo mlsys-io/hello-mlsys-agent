@@ -38,7 +38,7 @@ class FakeAgentClient:
         self.last = {}
         self.lang = "en"
         self.env = {**os.environ, "PATH": tool_path(), "PYTHONUTF8": "1", "MLAB_PROMPT_SOURCE": "web"}
-        from .codex_client import LabTools
+        from .lab_tools import LabTools
         self.exploration_tools = LabTools(runtime)
 
     def tr(self, template, /, **params):

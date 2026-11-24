@@ -1,0 +1,14 @@
+{
+  "id": "qwen3.8-27b-anthropic",
+  "display_name": "Qwen 3.8 27B (native Messages API)",
+  "tier": "Reference student agent, for hosts that serve the Anthropic Messages API",
+  "protocol": "anthropic",
+  "base_url": "${QWEN38_ANTHROPIC_BASE_URL}",
+  "model": "${QWEN38_MODEL:-qwen3.8-27b}",
+  "api_key_env": "QWEN38_API_KEY",
+  "env": {
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "${QWEN38_CONTEXT_TOKENS:-262144}"
+  },
+  "notes": ["QWEN38_ANTHROPIC_BASE_URL is the root that serves /v1/messages; Claude Code connects to it directly."],
+  "verified_on": null
+}

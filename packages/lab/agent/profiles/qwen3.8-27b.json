@@ -1,17 +1,25 @@
 {
   "id": "qwen3.8-27b",
-  "tier": "Weaker-model candidate from the implementation plan",
+  "display_name": "Qwen 3.8 27B",
+  "tier": "Reference student agent",
+  "protocol": "openai",
+  "base_url": "${QWEN38_BASE_URL}",
+  "model": "${QWEN38_MODEL:-qwen3.8-27b}",
   "api_key_env": "QWEN38_API_KEY",
-  "required_env": ["QWEN38_BASE_URL", "QWEN38_MODEL"],
+  "api_key_optional": true,
+  "max_tokens": "${QWEN38_MAX_TOKENS:-32768}",
+  "min_tokens": "${QWEN38_MIN_TOKENS:-8192}",
+  "timeout_s": "${QWEN38_TIMEOUT_S:-600}",
+  "extra_body": {"chat_template_kwargs": {"enable_thinking": "${QWEN38_THINKING:-true}"}},
   "env": {
-    "ANTHROPIC_BASE_URL": "${QWEN38_BASE_URL}",
-    "ANTHROPIC_MODEL": "${QWEN38_MODEL}",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "${QWEN38_MODEL}",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "${QWEN38_MODEL}",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "${QWEN38_MODEL}",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "${QWEN38_MODEL}",
-    "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "262144"
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "${QWEN38_CONTEXT_TOKENS:-262144}"
   },
-  "source": "Hosted by a third party; endpoint set by environment variables; context length from third-party sources",
+  "notes": [
+    "Any OpenAI-compatible /v1/chat/completions endpoint with function calling: a self-hosted vLLM or SGLang, OpenRouter, or a campus service.",
+    "QWEN38_BASE_URL ends in /v1. QWEN38_MODEL is the name the server serves (vLLM --served-model-name; on OpenRouter, the provider's model id).",
+    "Claude Code talks to a loopback gateway that mlab starts; the upstream key never enters Claude Code's environment.",
+    "min_tokens keeps Qwen's reasoning from consuming a whole short reply; QWEN38_THINKING=false turns reasoning off.",
+    "Plain http:// is accepted for loopback and private-network hosts only (or with MLAB_ALLOW_HTTP=1)."
+  ],
   "verified_on": null
 }

@@ -22,6 +22,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from ..core.io import NOTICE, LabError, hashed, require
 from ..core.workspace import Lab
+from ..agent_env import DEFAULT_PROVIDER
 from . import approvals, exploration, forms, i18n, views
 from ..core.locking import file_lock
 from .agent import TaskRuntime
@@ -106,18 +107,10 @@ def agent_factory(kind, provider=None):
     if kind == "fake":
         from .fake_client import FakeAgentClient
         return FakeAgentClient
-    if kind == "codex":
-        from .codex_client import factory
-        return factory(provider)
     if kind != "sdk":
         raise LabError("E_SCHEMA", f"unknown agent {kind}", 2)
     from .sdk_client import factory
-    legacy_factory = factory(provider)
-    def legacy_client(runtime):
-        require(not getattr(runtime, "exploration", False), "E_BACKEND_UNAVAILABLE",
-                "Restart the lab with Codex to discuss experiments here. Open /classic to inspect earlier records")
-        return legacy_factory(runtime)
-    return legacy_client
+    return factory(provider)
 
 
 def create_app(root, agent="fake", provider=None, opening=True, auto_continue=False, watch_interval=1.0):
@@ -261,8 +254,6 @@ def create_app(root, agent="fake", provider=None, opening=True, auto_continue=Fa
 
     async def workbench_chat(request):
         runtime = runtime_of(request)
-        if agent == "sdk":
-            return failure("E_BACKEND_UNAVAILABLE", "Restart the lab with Codex to discuss experiments here. Open /classic to inspect earlier records. Experiment controls still work here.")
         body = await body_of(request)
         text, mode, requested_refs = message_input(body)
         refs, context = await asyncio.to_thread(exploration.conversation_context, runtime.root, text, requested_refs)
@@ -480,7 +471,7 @@ def create_app(root, agent="fake", provider=None, opening=True, auto_continue=Fa
     return app
 
 
-def serve(root, simulator="llm", provider=None, agent="codex", port=8765, browser=True, opening=True, auto_continue=False,
+def serve(root, simulator="mlsys", provider=None, agent="sdk", port=8765, browser=True, opening=True, auto_continue=False,
           simulator_profile=None, simulator_url=None):
     import socket
     import uvicorn
@@ -488,7 +479,11 @@ def serve(root, simulator="llm", provider=None, agent="codex", port=8765, browse
         if probe.connect_ex(("127.0.0.1", port)) == 0:
             print(f"Port {port} is in use. Pick another one: mlab web {root} --port {port + 1}")
             return 2
-    provider = provider or ("codex-luna" if agent == "codex" else None)
+    provider = provider or (DEFAULT_PROVIDER if agent == "sdk" else None)
+    if simulator == "mlsys" and simulator_profile is None:
+        from ..backends.simulator_profiles import NOTICE as EXERCISE, PROFILE
+        simulator_profile = PROFILE
+        print(f"Simulator profile {PROFILE}: {EXERCISE}")
     course = Course(root)
     settings = course.ensure(simulator, "standin", provider, simulator_profile, simulator_url)
     application = create_app(course.root, agent, settings.get("provider"), opening, auto_continue)

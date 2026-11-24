@@ -1,14 +1,26 @@
 #!/usr/bin/env bash
-# Install the Python dependencies and check the supported Codex version.
+# Create the Python environment and install the pinned Claude Code into it.
+# Works in the hello-mlsys-agent workspace (one .venv at the repository root, simulator included)
+# and in a standalone hello-mlsys-lab checkout.
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+lab="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$lab"
 command -v uv >/dev/null || { echo "uv not found. Install it first: https://docs.astral.sh/uv/" >&2; exit 1; }
-uv sync --extra dev --extra web --python 3.12
-version="$(.venv/bin/python -c 'from mlab.codex import VERSION; print(VERSION)')"
-if ! .venv/bin/python -c 'from mlab.codex import executable; executable()' >/dev/null 2>&1; then
-    command -v npm >/dev/null || { echo "Install Node.js/npm to install Codex $version locally." >&2; exit 1; }
-    npm install --cache .venv/cache/npm --prefix .venv/lib/mlab-codex "@openai/codex@$version"
-    ln -sfn ../lib/mlab-codex/node_modules/.bin/codex .venv/bin/codex
+if [ -f ../../pyproject.toml ] && grep -q '^\[tool.uv.workspace\]' ../../pyproject.toml; then
+    (cd ../.. && uv sync --all-packages --extra dev --extra web --extra agent --extra simulator --python 3.12)
+else
+    uv sync --extra dev --extra web --extra agent --python 3.12
 fi
-echo "Ready: Codex $version / GPT-6 Luna. Run: source .venv/bin/activate && mlab doctor --web"
-echo "Each lab uses its own .mlab/codex directory; your personal Codex settings and login are not changed."
+python="$(uv run --no-sync python -c 'import sys; print(sys.executable)')"
+prefix="$("$python" -c 'import sys; print(sys.prefix)')"
+version="$("$python" -c 'from mlab.core.io import pinned_claude_version; print(pinned_claude_version())')"
+installed="$("$prefix/bin/claude" --version 2>/dev/null | awk '{print $1}' || true)"
+if [ "$installed" != "$version" ]; then
+    command -v npm >/dev/null || { echo "Install Node.js/npm to install Claude Code $version into this project." >&2; exit 1; }
+    npm install --silent --no-fund --no-audit --cache "$prefix/cache/npm" --prefix "$prefix/lib/mlab-claude" \
+        "@anthropic-ai/claude-code@$version"
+    ln -sfn ../lib/mlab-claude/node_modules/.bin/claude "$prefix/bin/claude"
+fi
+echo "Ready: Claude Code $("$prefix/bin/claude" --version | awk '{print $1}') in $prefix/bin."
+echo "Student agent: export QWEN38_BASE_URL (OpenAI-compatible, ends in /v1), QWEN38_MODEL and, if needed, QWEN38_API_KEY;"
+echo "then: mlab doctor --live && mlab init my-lab --task 9.2 && cd my-lab && ./claude"

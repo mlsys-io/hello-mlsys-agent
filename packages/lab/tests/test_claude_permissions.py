@@ -32,7 +32,8 @@ def test_gated_commands_need_the_student_in_every_form(workspace_path):
         (bin_dir / "mlab").chmod(0o755)
         env = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC_", "CLAUDE_CODE_")) and k != "CLAUDECODE"}
         env.update(model.environment(trusted_home(workspace_path / "home", workspace)), PATH=f"{bin_dir}:{env['PATH']}")
-        claude = shutil.which("claude", path=str(ROOT / ".venv/bin"))
+        from mlab.core.io import project_claude
+        claude = str(project_claude())  # this interpreter's bin: <lab>/.venv standalone, <repo>/.venv in the workspace
         process = subprocess.run([claude, "-p", "go", "--tools", "Bash", "--setting-sources", "project", "--output-format", "json",
                                   "--max-turns", "12"], cwd=workspace, env=env, capture_output=True, text=True, timeout=300)
         result = json.loads(process.stdout)

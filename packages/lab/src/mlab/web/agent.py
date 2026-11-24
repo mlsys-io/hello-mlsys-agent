@@ -1,8 +1,8 @@
 """One agent per session, a session being one attempt at a task in its own workspace. A single owner coroutine holds
 the model client for its whole life; the page reaches it through a queue, so the client is never touched from two tasks.
 
-The client is replaceable: `fake_client.FakeAgentClient` for offline walkthroughs, `codex_client` for Codex,
-and the opt-in legacy `sdk_client`. A client implements connect(session) -> session, turn(prompt) -> async events,
+The client is replaceable: `fake_client.FakeAgentClient` for offline walkthroughs and `sdk_client` for Claude
+Code through the Agent SDK. A client implements connect(session) -> session, turn(prompt) -> async events,
 interrupt() and disconnect(), and asks for permissions through TaskRuntime.permission().
 """
 import asyncio

@@ -9,7 +9,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
-BIN_DIR = Path(sys.executable).parent  # Holds mlab and, when installed locally, the pinned Codex.
+BIN_DIR = Path(sys.executable).parent  # Holds mlab and, when installed by scripts/setup.sh, the pinned Claude Code.
 NOTICE = "Demo data: all performance numbers in this exercise are synthetic, not measurements from a real GPU."
 TERMINAL = {"succeeded", "failed", "cancelled", "timed_out"}
 

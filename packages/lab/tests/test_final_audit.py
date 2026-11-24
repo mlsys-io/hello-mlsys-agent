@@ -11,9 +11,9 @@ from starlette.testclient import TestClient
 from mlab.core.workspace import Lab
 from mlab.core.io import atomic
 from mlab.web import exploration, reading
-from mlab.web.codex_client import LabTools
+from mlab.web.lab_tools import LabTools
 from mlab.web.server import create_app
-from test_codex import make_runtime
+from labtest import make_runtime
 from test_exploration import draft, setup, simulate
 
 
@@ -111,41 +111,3 @@ def test_workspace_reads_never_observe_partially_saved_candidate_files(workspace
     assert len(view["experiments"][0]["candidates"]) == 2
 
 
-def test_changed_agent_policy_retains_prior_discussion_without_cross_session_memory(workspace_path):
-    course, root = setup(workspace_path)
-    runtime = make_runtime(root)
-    for index in range(40):
-        runtime.add("student", f"Earlier question {index}")
-        runtime.add("agent", f"Earlier explanation {index}")
-    runtime.add("student", "Remember that my comparison label is MEMORY-ORBIT-42.")
-    runtime.add("agent", "I will use that label for your comparison.")
-    runtime.meta.update(session="test-codex-session", backend="codex", model="gpt-6-luna",
-                        interaction="exploration", exploration_revision="outdated")
-    runtime.save_meta()
-
-    async def connect(target, previous):
-        current = make_runtime(target)
-        current.exploration = True
-        client = current.factory(current)
-        instructions = []
-        request = client.server.request
-        async def observed(method, params):
-            if method == "thread/start":
-                instructions.append(params["baseInstructions"])
-            return await request(method, params)
-        client.server.request = observed
-        try:
-            await client.connect(previous)
-            return instructions[0]
-        finally:
-            await client.disconnect()
-
-    async def scenario():
-        restored = await connect(root, runtime.meta["session"])
-        assert "MEMORY-ORBIT-42" in restored
-        assert "historical" in restored and ".mlab/evidence/" in restored
-        snapshots = [json.loads(path.read_text()) for path in (root / ".mlab/evidence").glob("*.json")]
-        assert any(len(item.get("messages", [])) == 82 for item in snapshots)
-        fresh = course.root / course.create("9.2")
-        assert "MEMORY-ORBIT-42" not in await connect(fresh, None)
-    asyncio.run(scenario())

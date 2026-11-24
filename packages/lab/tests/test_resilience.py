@@ -8,9 +8,9 @@ from starlette.testclient import TestClient
 from mlab.core.io import LabError
 from mlab.core.workspace import Lab
 from mlab.web import exploration, reading, views
-from mlab.web.codex_client import LabTools
+from mlab.web.lab_tools import LabTools
 from mlab.web.server import create_app
-from test_codex import make_runtime
+from labtest import make_runtime
 from test_exploration import draft, setup
 
 

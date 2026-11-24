@@ -1,6 +1,7 @@
 {
   "id": "deepseek-v4-pro",
   "tier": "Capability upper bound",
+  "protocol": "anthropic",
   "api_key_env": "DEEPSEEK_API_KEY",
   "env": {
     "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",

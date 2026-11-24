@@ -28,10 +28,10 @@ def parser():
     init = commands.add_parser("init")
     init.add_argument("directory")
     init.add_argument("--task", choices=["9.1", "9.2", "9.3"], default="9.2")
-    init.add_argument("--simulator", "--backend", dest="simulator", choices=["llm", "fixture", "mlsys"], default="llm",
-                      help="Fast flywheel backend (--backend is the older name)")
+    init.add_argument("--simulator", "--backend", dest="simulator", choices=["mlsys", "fixture", "llm"], default="mlsys",
+                      help="Fast flywheel backend: mlsys is the in-tree simulator (--backend is the older name)")
     init.add_argument("--hardware", choices=["standin"], default="standin", help="Slow flywheel backend")
-    init.add_argument("--provider")
+    init.add_argument("--provider", help="Student agent profile under agent/profiles (default: qwen3.8-27b)")
     init.add_argument("--simulator-profile", choices=["protocol-v1.20"])
     init.add_argument("--simulator-url")
     init.add_argument("--mode", choices=["guided", "open"], default="guided", help="open lets advanced students skip hypothesis-first")
@@ -41,7 +41,8 @@ def parser():
     hook.add_argument("event", choices=["user-prompt"])
     doctor_parser = commands.add_parser("doctor")
     doctor_parser.add_argument("--web", action="store_true", help="Also check the web page's dependencies")
-    doctor_parser.add_argument("--agent", choices=["codex", "sdk"], default="codex")
+    doctor_parser.add_argument("--provider", help="Student agent profile to check (default: the workspace's, else qwen3.8-27b)")
+    doctor_parser.add_argument("--live", action="store_true", help="Also make one real function-call round trip to the model")
     task = commands.add_parser("task")
     task.add_argument("action", choices=["show"])
     workflow = commands.add_parser("workflow")
@@ -89,11 +90,11 @@ def parser():
                       help="fixture: scripted mock numbers; mlsys: the in-tree simulator, in-process")
     web = commands.add_parser("web", help="Serve the course page: one agent per task, on 127.0.0.1")
     web.add_argument("directory", nargs="?", default="mlsys-course", help="Course directory; created if missing. Each session started on the page is a workspace in it")
-    web.add_argument("--simulator", choices=["llm", "fixture", "mlsys"], default="llm")
+    web.add_argument("--simulator", choices=["mlsys", "fixture", "llm"], default="mlsys")
     web.add_argument("--simulator-profile", choices=["protocol-v1.20"])
     web.add_argument("--simulator-url")
-    web.add_argument("--provider", help="Model profile under agent/profiles (default: codex-luna)")
-    web.add_argument("--agent", choices=["codex", "sdk", "fake"], default="codex", help="codex: isolated Codex; fake: offline; sdk: legacy Claude")
+    web.add_argument("--provider", help="Student agent profile under agent/profiles (default: qwen3.8-27b)")
+    web.add_argument("--agent", choices=["sdk", "fake"], default="sdk", help="sdk: Claude Code through the Agent SDK; fake: offline walkthrough")
     web.add_argument("--port", type=int, default=8765)
     web.add_argument("--no-browser", action="store_true")
     web.add_argument("--no-opening", action="store_true", help="Do not let the agent speak first when a task page opens")
@@ -105,7 +106,7 @@ def parser():
     return root
 
 
-def web_doctor(agent="codex"):
+def web_doctor(agent="sdk"):
     """Check web dependencies and the default port without starting a model."""
     import importlib.util
     import socket
@@ -122,30 +123,10 @@ def web_doctor(agent="codex"):
     return report
 
 
-def doctor(web=False, agent="codex"):
-    if agent == "codex":
-        from ..codex import MODEL, VERSION, credentials, installation
-        path, version = installation()
-        try:
-            auth = credentials()["type"]
-        except LabError:
-            auth = None
-        report = {"python": sys.version.split()[0], "mlab": __version__, "agent": "codex", "model": MODEL,
-                  "codex_path": path, "codex": version, "codex_pinned": VERSION, "codex_version_matches_pin": version == VERSION,
-                  "auth": auth, "state_directory": "<workspace>/.mlab/codex", "credentials_on_disk": False,
-                  "llm_route": "api" if os.environ.get("MLAB_LLM_BASE_URL") else "codex_login",
-                  "fixture_ready": True, "warning": "No live model call performed."}
-        if web:
-            report["web"] = web_doctor()
-        if version != VERSION:
-            report["next_actions"] = [{"actor": "student", "do": "fix", "say": "Run scripts/setup.sh to install the supported Codex CLI."}]
-        elif web and not all(report["web"].get(k) for k in ("starlette", "uvicorn")):
-            report["next_actions"] = [{"actor": "student", "do": "fix", "say": "Run scripts/setup.sh to install the web extra."}]
-        elif not auth:
-            report["next_actions"] = [{"actor": "student", "do": "fix", "say": "Run codex login or set OPENAI_API_KEY; mlab does not modify that login."}]
-        elif web and not report["web"]["local_tcp_available"]:
-            report["next_actions"] = [{"actor": "student", "do": "fix", "say": "Run the page in an environment that permits local TCP sockets."}]
-        return report
+def doctor(web=False, agent="sdk", provider=None, live=False, workspace=None):
+    """Claude Code install, the student agent's provider profile and, with live, one real round trip to its model."""
+    from ..agent_env import DEFAULT_PROVIDER, endpoint, endpoint_target, load_profile
+    from ..gateway import GatewayError, check_endpoint
     claude, version = claude_install()
     pinned = pinned_claude_version()
     ready = all(os.environ.get(v) for v in ["MLAB_LLM_BASE_URL", "MLAB_LLM_API_KEY", "MLAB_LLM_MODEL"]) or (
@@ -157,13 +138,34 @@ def doctor(web=False, agent="codex"):
               "local_version_evidence": compatibility["verified"].get(version, []),
               "llm_route": "api" if ready else "claude_login", "fixture_ready": True,
               "warning": "No live model call performed."}
+    if provider is None and workspace is not None:
+        try:
+            provider = load(workspace / ".mlab/config.json").get("provider")
+        except (OSError, ValueError, LabError):
+            provider = None
+    provider = provider or DEFAULT_PROVIDER
+    problem = None
+    try:
+        profile = load_profile(provider)
+        resolved = endpoint(profile)
+        report["agent"] = {"provider": provider, "protocol": resolved["protocol"], "base_url": resolved.get("base_url"),
+                           "model": resolved.get("model") or profile.get("env", {}).get("ANTHROPIC_MODEL"),
+                           "key_set": bool(resolved.get("key")) if resolved["protocol"] != "login" else None}
+        if live and resolved["protocol"] != "login":
+            report["agent"]["live_check"] = check_endpoint(endpoint_target(resolved))
+            report["warning"] = "One live function-call round trip was made to the student agent's model."
+    except (LabError, GatewayError) as error:
+        problem = str(error)
+        report["agent"] = {"provider": provider, "error": problem}
     if web:
         report["web"] = web_doctor("sdk")
     if version != pinned:
         report["next_actions"] = [{"actor": "student", "do": "fix", "say": f"Run scripts/setup.sh to install Claude Code {pinned} into this project."}]
     elif web and not all(report["web"].get(k) for k in ("sdk", "starlette", "uvicorn")):
         report["next_actions"] = [{"actor": "student", "do": "fix", "say": "Run scripts/setup.sh to install the web extra."}]
-    elif login is False and not ready:
+    elif problem:
+        report["next_actions"] = [{"actor": "student", "do": "fix", "say": f"Student agent profile {provider}: {problem}"}]
+    elif login is False and not ready and report["agent"].get("protocol") == "login":
         report["next_actions"] = [{"actor": "student", "do": "fix", "say": "Log in once: run ./claude in a workspace, or claude from an activated environment."}]
     return report
 
@@ -384,10 +386,22 @@ def main(argv=None):
     try:
         args = parser().parse_args(argv)
         if args.command == "init":
+            disclosed = None
+            if args.simulator == "mlsys" and not args.simulator_profile:
+                # The simulator's catalog knows only the exercise identities; say so instead of swapping silently.
+                from ..backends.simulator_profiles import NOTICE as EXERCISE, PROFILE
+                args.simulator_profile, disclosed = PROFILE, EXERCISE
             output = initialize(args.directory, args.task, args.simulator, args.provider, args.hardware, args.mode,
                                 args.simulator_profile, args.simulator_url)
+            if disclosed:
+                output["simulator_profile"] = {"id": args.simulator_profile, "notice": disclosed,
+                                               "why": "--simulator mlsys defaults to this profile; see task/profile.json"}
         elif args.command == "doctor":
-            output = doctor(args.web, args.agent)
+            try:
+                here = find_workspace(args.workspace)
+            except LabError:
+                here = None
+            output = doctor(args.web, provider=args.provider, live=args.live, workspace=here)
         elif args.command == "hook":
             return record_prompt(argv)
         elif args.command == "schema":

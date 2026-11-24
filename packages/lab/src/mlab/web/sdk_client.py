@@ -5,18 +5,43 @@ settings.local.json apply as in the terminal. The template's permission rules ar
 which hold even when the workspace is not trusted. Gated commands reach can_use_tool and become cards on the page;
 a PreToolUse hook refuses gated commands hidden in variant or compound forms. The raw message stream is appended
 to .mlab/web/sdk.jsonl for audit.
+
+In the exploration workbench the built-in tools are switched off. The page's lab tools (Explore, Bash, Read
+from lab_tools) are served instead by an in-process MCP server, so confirmations, read-only Bash and paged
+evidence reads behave the same as in the offline fake client.
 """
 import dataclasses
 import json
 import os
-from ..agent_env import load_profile, provider_key, sanitize_process_environment, web_environment
+from ..agent_env import endpoint, load_profile, open_endpoint, sanitize_process_environment, web_environment
+from ..launch import MODEL_VARIABLES
 from ..core.io import ROOT, load, project_claude
 from . import approvals
+from .lab_tools import EXPLORATION, TOOLS as LAB_TOOLS, LabTools
 
 TOOLS = ["Bash", "Read", "Edit", "Write", "AskUserQuestion"]
 APPEND = ("This session runs behind the course web page. Text marked [Page notice] or [Page note] comes from the page, not from "
           "the student; follow the section 'Web page mode' of AGENTS.md. You are talking with the student: address them directly "
           "in the second person, never as 'the student'.")
+
+
+# The exploration conversation uses exactly these lab tools, as mcp__lab__<name>.
+EXPLORATION_TOOLS = ("Explore", "Bash", "Read")
+EXPLORATION_NAMES = ("In this conversation the tools are named mcp__lab__Explore, mcp__lab__Bash and mcp__lab__Read; "
+                     "wherever these instructions say Explore, Bash or Read, call those tools.\n\n")
+
+
+def lab_server(tools):
+    """The workbench lab tools as an in-process MCP server named 'lab'."""
+    from claude_agent_sdk import create_sdk_mcp_server, tool
+    specs = {spec["name"]: spec for spec in LAB_TOOLS}
+    served = []
+    for name in EXPLORATION_TOOLS:
+        async def handler(args, name=name):
+            text, failed = await tools.execute(name, args)
+            return {"content": [{"type": "text", "text": text}], "is_error": bool(failed)}
+        served.append(tool(name, specs[name]["description"], specs[name]["inputSchema"])(handler))
+    return create_sdk_mcp_server("lab", tools=served)
 
 
 def template_settings():
@@ -50,11 +75,20 @@ class SdkAgentClient:
         self.audit = self.root / ".mlab/web/sdk.jsonl"
         self.errors = []
         self.cost_seen = 0.0  # total_cost_usd is cumulative within a session; turns get the difference.
+        self.lab_tools = None
 
     def options(self, resume):
         from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
         settings = template_settings()
         claude = project_claude()
+        if getattr(self.runtime, "exploration", False):
+            self.lab_tools = LabTools(self.runtime)
+            names = [f"mcp__lab__{name}" for name in EXPLORATION_TOOLS]
+            return ClaudeAgentOptions(
+                cwd=str(self.root), cli_path=str(claude) if claude.exists() else None, setting_sources=["project", "local"],
+                system_prompt=EXPLORATION_NAMES + EXPLORATION, tools=[], mcp_servers={"lab": lab_server(self.lab_tools)},
+                allowed_tools=names, strict_mcp_config=True, env=self.env, include_partial_messages=True,
+                max_turns=self.max_turns, resume=resume or None, stderr=self.stderr)
         return ClaudeAgentOptions(
             cwd=str(self.root), cli_path=str(claude) if claude.exists() else None, setting_sources=["project", "local"],
             system_prompt={"type": "preset", "preset": "claude_code", "append": APPEND}, tools=TOOLS,
@@ -91,6 +125,8 @@ class SdkAgentClient:
             await client.disconnect()
 
     async def interrupt(self):
+        if getattr(self, "lab_tools", None):
+            await self.lab_tools.interrupt()
         if self.client:
             await self.client.interrupt()
 
@@ -144,15 +180,20 @@ class SdkAgentClient:
 
 def factory(provider=None, env=None):
     """A client factory for mlab web. The key is read once from the environment, then provider variables are removed
-    from the server process so that nothing reaches an agent except what is passed here."""
+    from the server process so that nothing reaches an agent except what is passed here. An OpenAI-compatible
+    profile gets one loopback gateway for the server's lifetime; agents only see its URL and local token."""
     own_config = False
     if env is None:
         profile = load_profile(provider) if provider else None
-        key = provider_key(profile) if profile else None
+        resolved = endpoint(profile) if profile else {"protocol": "login"}
         simulator = {name: value for name, value in os.environ.items() if name.startswith("MLAB_LLM_")}
+        _, url, token = open_endpoint(resolved)
         sanitize_process_environment()
-        env = {**web_environment(key, None), **simulator}
-        own_config = bool(key)
+        env = {**web_environment(token, None), **simulator}
+        if url:
+            env["ANTHROPIC_BASE_URL"] = url
+            env.update(dict.fromkeys(MODEL_VARIABLES, resolved["model"]))
+        own_config = bool(token)
     def make(runtime):
         task_env = dict(env)
         if own_config:

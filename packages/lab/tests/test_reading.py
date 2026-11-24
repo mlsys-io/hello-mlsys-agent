@@ -6,8 +6,8 @@ import pytest
 
 from mlab.core.workspace import Lab
 from mlab.web import exploration, reading, views
-from mlab.web.codex_client import LabTools
-from test_codex import make_runtime
+from mlab.web.lab_tools import LabTools
+from labtest import make_runtime
 from test_exploration import draft, setup, simulate
 
 

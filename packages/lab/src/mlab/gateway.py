@@ -5,8 +5,11 @@ Upstream replies are buffered; SSE heartbeats keep the Claude connection alive.
 This is a CLI-demo adapter, not a general Anthropic protocol implementation.
 """
 import hmac
+import ipaddress
 import json
+import os
 import queue
+import re
 import threading
 import urllib.error
 import urllib.parse
@@ -32,7 +35,17 @@ def text_content(value):
     return "\n".join(parts)
 
 
-def to_openai(body, model, max_tokens):
+# Reasoning models served without a reasoning parser put their thinking inline; a reply cut off mid-reasoning
+# has no closing tag, and everything after <think> is reasoning.
+THINK = re.compile(r"<think>.*?(?:</think>\s*|\Z)", re.DOTALL)
+
+
+def output_budget(body, max_tokens, min_tokens=0):
+    """Claude Code's request, raised to the floor (reasoning must not eat the whole reply) and capped."""
+    return min(max(int(body.get("max_tokens", max_tokens)), min_tokens), max_tokens)
+
+
+def to_openai(body, model, max_tokens, min_tokens=0):
     messages = []
     if body.get("system"):
         messages.append({"role": "system", "content": text_content(body["system"])})
@@ -74,7 +87,7 @@ def to_openai(body, model, max_tokens):
         else:
             raise GatewayError("Unsupported message role.")
     result = {"model": model, "messages": messages, "stream": False,
-              "max_tokens": min(int(body.get("max_tokens", max_tokens)), max_tokens)}
+              "max_tokens": output_budget(body, max_tokens, min_tokens)}
     tools = []
     for tool in body.get("tools", []):
         if "input_schema" not in tool or tool.get("type", "custom") != "custom":
@@ -101,14 +114,19 @@ def from_openai(data, model):
         choice = data["choices"][0]
         message = choice["message"]
         content = []
-        if message.get("content"):
-            content.append({"type": "text", "text": text_content(message["content"])})
+        # reasoning_content (vLLM/SGLang reasoning parsers) is private reasoning and is dropped.
+        text = THINK.sub("", text_content(message.get("content") or "")).strip()
+        if text:
+            content.append({"type": "text", "text": text})
         for call in message.get("tool_calls", []):
             args = json.loads(call["function"]["arguments"])
             if not isinstance(args, dict):
                 raise ValueError("tool arguments must be an object")
             content.append({"type": "tool_use", "id": call["id"], "name": call["function"]["name"], "input": args})
         if not content:
+            if choice.get("finish_reason") == "length":
+                raise GatewayError("The model used its whole output budget before answering (finish_reason=length); "
+                                   "raise the profile's min_tokens/max_tokens or turn its thinking off.", 502)
             raise ValueError("empty assistant reply")
         reason = "tool_use" if any(b["type"] == "tool_use" for b in content) else (
             "max_tokens" if choice.get("finish_reason") == "length" else "end_turn")
@@ -116,28 +134,42 @@ def from_openai(data, model):
         return {"id": "msg_" + uuid.uuid4().hex, "type": "message", "role": "assistant", "model": model,
                 "content": content, "stop_reason": reason, "stop_sequence": None,
                 "usage": {"input_tokens": usage.get("prompt_tokens", 0), "output_tokens": usage.get("completion_tokens", 0)}}
+    except GatewayError:
+        raise
     except (KeyError, IndexError, TypeError, ValueError) as error:
         raise GatewayError("Invalid upstream reply: expected text or valid JSON function arguments.", 502) from error
+
+
+def plain_http_allowed(host):
+    """Loopback, private-network and link-local hosts, where a lab model server usually lives."""
+    if os.environ.get("MLAB_ALLOW_HTTP") == "1" or host in {"localhost"}:
+        return True
+    try:
+        address = ipaddress.ip_address(host or "")
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private or address.is_link_local
 
 
 class Gateway:
     protocol = "openai"
     auth_mode = "bearer"
-    def __init__(self, base_url, model, api_key, token, max_tokens=4096, timeout=180, extra_body=None):
+    def __init__(self, base_url, model, api_key, token, max_tokens=4096, timeout=180, extra_body=None, min_tokens=0):
         parsed = urllib.parse.urlsplit(base_url)
-        if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"}):
-            raise GatewayError("API URL must use HTTPS (HTTP permitted only for local tests).")
+        if parsed.scheme != "https" and not (parsed.scheme == "http" and plain_http_allowed(parsed.hostname)):
+            raise GatewayError("API URL must use HTTPS. Plain HTTP is accepted for loopback and private addresses "
+                               "(a self-hosted vLLM/SGLang), or anywhere with MLAB_ALLOW_HTTP=1.")
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise GatewayError("Use a plain API base URL without embedded credentials/query/fragment.")
         self.url = base_url.rstrip("/") + "/chat/completions"
         self.model, self.api_key, self.token = model, api_key, token
-        self.max_tokens, self.timeout = max_tokens, timeout
+        self.max_tokens, self.min_tokens, self.timeout = max_tokens, min(min_tokens, max_tokens), timeout
         self.extra_body = extra_body or {}
         if set(self.extra_body) & {"model", "messages", "tools", "tool_choice", "stream", "max_tokens"}:
             raise GatewayError("extra_body cannot override routing, messages, tools or output limits.")
 
     def complete(self, body):
-        payload = {**to_openai(body, self.model, self.max_tokens), **self.extra_body}
+        payload = {**to_openai(body, self.model, self.max_tokens, self.min_tokens), **self.extra_body}
         request = urllib.request.Request(self.url, json.dumps(payload, ensure_ascii=False).encode(),
             {"Content-Type": "application/json", "Authorization": "Bearer " + self.api_key}, method="POST")
         try:
@@ -200,7 +232,7 @@ class Gateway:
                     if not 0 < length <= 8_000_000:
                         raise GatewayError("Invalid request size.")
                     body = json.loads(self.rfile.read(length))
-                    to_openai(body, gateway.model, gateway.max_tokens)  # Validate before SSE headers.
+                    to_openai(body, gateway.model, gateway.max_tokens, gateway.min_tokens)  # Validate before SSE headers.
                     if not body.get("stream"):
                         return self.reply(200, gateway.complete(body))
                     self.send_response(200)
@@ -290,3 +322,23 @@ def connect_claude(endpoint):
         return None, endpoint.url, endpoint.api_key
     server = endpoint.serve()
     return server, f"http://127.0.0.1:{server.server_port}", endpoint.token
+
+
+def check_endpoint(endpoint):
+    """One harmless forced function call, then the tool-result turn: what an agent loop needs from a model API."""
+    request = {"messages": [{"role": "user", "content": "Call check_status with experiment_id='probe'."}],
+        "max_tokens": 256, "tools": [{"name": "check_status", "description": "Harmless test, no experiment runs.",
+        "input_schema": {"type": "object", "properties": {"experiment_id": {"type": "string"}},
+                         "required": ["experiment_id"]}}],
+        "tool_choice": {"type": "tool", "name": "check_status"}}
+    answer = endpoint.complete(request)
+    calls = [b for b in answer["content"] if b["type"] == "tool_use"]
+    if len(calls) != 1 or calls[0]["name"] != "check_status" or calls[0]["input"] != {"experiment_id": "probe"}:
+        raise GatewayError("API replied, but failed the required function-tool test.")
+    request["messages"] += [{"role": "assistant", "content": answer["content"]}, {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": calls[0]["id"], "content": '{"status":"ready"}'}]}]
+    request["tool_choice"] = {"type": "none"}
+    reply = endpoint.complete(request)
+    if not any(b["type"] == "text" and b["text"].strip() for b in reply["content"]):
+        raise GatewayError("API failed the tool-result round trip.")
+    return {"function_call": True, "tool_result_round_trip": True}

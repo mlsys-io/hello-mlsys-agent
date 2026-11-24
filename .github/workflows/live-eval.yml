@@ -1,0 +1,45 @@
+name: Live models (nightly)
+
+# Smoke-tests the two real models end to end when their secrets are configured:
+# the student agent (Qwen 3.8 27B through the loopback gateway: one function-call
+# round trip) and the teacher (DeepSeek V4.1 Flash: one coaching answer and one
+# rubric assessment of a simulated workspace). Skips cleanly without secrets.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      QWEN38_BASE_URL: ${{ secrets.QWEN38_BASE_URL }}
+      QWEN38_MODEL: ${{ vars.QWEN38_MODEL || 'qwen3.8-27b' }}
+      QWEN38_API_KEY: ${{ secrets.QWEN38_API_KEY }}
+      MLAB_TEACHER_BASE_URL: ${{ secrets.MLAB_TEACHER_BASE_URL }}
+      MLAB_TEACHER_MODEL: ${{ vars.MLAB_TEACHER_MODEL || 'deepseek-v4.1-flash' }}
+      MLAB_TEACHER_API_KEY: ${{ secrets.MLAB_TEACHER_API_KEY }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+      - run: uv sync --all-packages --extra simulator --locked
+      - name: Student agent round trip
+        if: env.QWEN38_BASE_URL != ''
+        run: |
+          uv run --no-sync mlab doctor --live > doctor.json
+          python3 -c "import json; d = json.load(open('doctor.json'))['agent']; print(d); assert d['live_check']['tool_result_round_trip']"
+      - name: Teacher coaching and assessment
+        if: env.MLAB_TEACHER_BASE_URL != ''
+        run: |
+          ws="$RUNNER_TEMP/live"
+          uv run --no-sync mlab demo --task 9.2 --simulator mlsys --out "$ws"
+          uv run --no-sync mlab --workspace "$ws" ask "Why can TTFT p99 rise while throughput stays flat?" > /dev/null
+          uv run --no-sync mlab --workspace "$ws" assess > /dev/null
+          python3 -c "import json,glob; a = json.load(open(sorted(glob.glob('$ws/assessments/*.json'))[-1])); print(a['total'], [(c['id'], c['score']) for c in a['criteria']])"

@@ -59,7 +59,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
-      - run: uv sync --all-packages --extra dev --extra web --extra simulator --locked
+      - run: uv sync --all-packages --extra dev --extra web --extra agent --extra simulator --locked
       - name: Lab tests (simulator contract tests run the in-tree simulator in-process)
         run: uv run --no-sync python -m pytest -q
         working-directory: packages/lab

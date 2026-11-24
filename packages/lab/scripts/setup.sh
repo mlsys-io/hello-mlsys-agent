@@ -9,7 +9,8 @@ command -v uv >/dev/null || { echo "uv not found. Install it first: https://docs
 if [ -f ../../pyproject.toml ] && grep -q '^\[tool.uv.workspace\]' ../../pyproject.toml; then
     (cd ../.. && uv sync --all-packages --extra dev --extra web --extra agent --extra simulator --python 3.12)
 else
-    uv sync --extra dev --extra web --extra agent --python 3.12
+    # The simulator extra is only available in the workspace. Install the requested extras alone.
+    uv run --no-sync --python 3.12 uv pip install --editable '.[dev,web,agent]'
 fi
 python="$(uv run --no-sync python -c 'import sys; print(sys.executable)')"
 prefix="$("$python" -c 'import sys; print(sys.prefix)')"

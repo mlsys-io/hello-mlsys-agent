@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 export function verifyCandidates(expected, actual) {
   execFileSync(
-    path.join(project, '.venv/bin/python'),
+    path.join(project, 'scripts/lab-python'),
     [
       '-c',
       [

@@ -57,11 +57,14 @@ The interface itself needs no CDN, external fonts, analytics, remote UI service 
 
 ## Build and verify
 
+Run these commands from the lab directory (`packages/lab` in the monorepo or the root of the standalone lab). The setup script installs the Python environment for the current checkout.
+
 ```bash
+scripts/setup.sh
 scripts/build-web.sh
 ```
 
-This installs Node 24.22.3 under `.venv/web-toolchain`, uses a project-local npm cache, installs the lockfile and builds the assets. It does not replace the machine's Node or Codex installation. Codex remains pinned independently to 0.167.2.
+`scripts/build-web.sh` installs Node 24.22.3 under the lab's `.venv/web-toolchain`, installs the frontend lockfile and builds the assets.
 
 For frontend development after the build:
 
@@ -72,12 +75,12 @@ npm run dev
 
 The Vite proxy expects the Python server on port 8765. Open the Vite address under `/static/workbench/`. The generated production assets, not the development server, are used by `mlab web`.
 
-Run the API/regression suite and browser checks:
+To run the API and browser checks, start in the lab directory:
 
 ```bash
-.venv/bin/python -m pytest -q
+scripts/verify-cli.sh
 cd frontend
-PATH="$PWD/node_modules/.bin:$PATH" PLAYWRIGHT_BROWSERS_PATH=../.venv/playwright playwright install chromium --only-shell
+npm run install:browser
 npm run test:browser
 npm run format:check
 ```

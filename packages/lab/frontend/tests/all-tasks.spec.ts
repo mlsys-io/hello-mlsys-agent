@@ -18,7 +18,7 @@ const test = base.extend<{}, { reviewServer: ReviewServer }>({
       const port = (reservation.address() as { port: number }).port;
       await new Promise<void>((done) => reservation.close(() => done()));
       const server = spawn(
-        resolve('../.venv/bin/python'),
+        resolve('../scripts/lab-python'),
         [
           '-m',
           'mlab',

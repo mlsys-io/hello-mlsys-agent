@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+lab="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python="$(uv run --project "$lab" --no-sync python -c 'import sys; print(sys.executable)')"
+# Playwright stops its server by PID. Hand that PID to Python so teardown reaches it.
+exec "$python" "$@"

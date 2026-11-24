@@ -61,14 +61,19 @@ jobs:
       - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
       - run: uv sync --all-packages --extra dev --extra web --extra agent --extra simulator --locked
       - name: Lab tests (simulator contract tests run the in-tree simulator in-process)
-        run: uv run --no-sync python -m pytest -q
-        working-directory: packages/lab
+        run: packages/lab/scripts/verify-cli.sh
       - name: Scripted demo on fixture and on the in-tree simulator
         run: |
           for task in 9.1 9.2 9.3; do
             uv run --no-sync mlab demo --task "$task" --out "$RUNNER_TEMP/demo-fixture-$task"
             uv run --no-sync mlab demo --task "$task" --simulator mlsys --out "$RUNNER_TEMP/demo-mlsys-$task"
           done
+      - name: Lab browser tests
+        working-directory: packages/lab/frontend
+        run: |
+          npm ci
+          npm run install:browser -- --with-deps
+          npm run test:browser
 
   calibration:
     # The simulator improvement loop: its tests, and the committed ledger, datasets and Profiles intact.
@@ -96,6 +101,16 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install -e "./packages/lab[dev]"
       - run: python -c "from mlab.backends.simulator_http import inprocess_available as f; assert not f()"
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+      - name: Run setup from a standalone lab checkout
+        run: |
+          standalone="$RUNNER_TEMP/standalone lab"
+          mkdir -p "$standalone"
+          git archive HEAD:packages/lab | tar -x -C "$standalone"
+          cd "$standalone"
+          scripts/setup.sh
+          scripts/lab-python -c "from mlab.backends.simulator_http import inprocess_available as f; assert not f()"
+          scripts/lab-python -m pytest -q tests/test_student_agent.py
 
   mirror-dryrun:
     # Fails when a mirror has commits this repo lacks (fix: scripts/mirror/absorb-upstream.sh).

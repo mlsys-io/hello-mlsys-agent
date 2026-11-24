@@ -247,7 +247,7 @@ See integrations/mlsys-simulator/APP_INTEGRATION.zh-CN.md in the repository. Cre
 await writeFile(path.join(output, 'README.md'), markdown);
 if (process.argv.includes('--zip')) {
   execFileSync(
-    path.join(project, '.venv/bin/python'),
+    path.join(project, 'scripts/lab-python'),
     [
       '-c',
       [

@@ -40,7 +40,11 @@ def script(messages):
     steps = [tool_call("Bash", command="mlab next", description="state"), tool_call("Bash", command="mlab conclude", description="conclude"),
              tool_call("Bash", command="mlab --workspace . conclude", description="variant"), tool_call("AskUserQuestion", questions=[QUESTION])]
     count = tool_results(messages)
-    return steps[count] if count < len(steps) else {"content": "Got: " + str(last.get("content"))[:300]}
+    if count < len(steps):
+        return steps[count]
+    # The client can append a token-budget reminder after a tool result.
+    answer = next(message["content"] for message in reversed(messages) if message["role"] == "tool")
+    return {"content": "Got: " + answer}
 
 
 async def scenario(workspace, env):

@@ -338,10 +338,9 @@ if (archive) {
       [...task.files].map((name) => path.relative(output, path.join(task.folder, name))),
     ),
   ];
-  const python = path.join(project, '.venv/bin/python');
   // The manifest is passed as JSON, never interpreted by a shell or expanded recursively.
   execFileSync(
-    python,
+    path.join(project, 'scripts/lab-python'),
     [
       '-c',
       `import json, pathlib, sys, zipfile

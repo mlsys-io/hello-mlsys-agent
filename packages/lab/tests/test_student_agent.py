@@ -1,6 +1,7 @@
 """The reference student agent: Claude Code on Qwen 3.8 27B through the loopback gateway, no Codex anywhere."""
 import json
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -157,9 +158,8 @@ def test_agent_environment_strips_provider_and_teacher_secrets():
 def test_launcher_gives_claude_code_only_the_gateway_and_relays_its_requests(workspace_path, tmp_path, monkeypatch):
     """./claude end to end: a stand-in Claude Code records its environment and sends one Messages request."""
     fake = FakeOpenAI(lambda body: message("hello from qwen"))
-    claude = tmp_path / "claude"
-    claude.write_text(f"""#!{sys.executable}
-import json, os, sys, urllib.request
+    script = tmp_path / "fake_claude.py"
+    script.write_text(f"""import json, os, sys, urllib.request
 out = {{"argv": sys.argv[1:], "env": dict(os.environ)}}
 request = urllib.request.Request(os.environ["ANTHROPIC_BASE_URL"] + "/v1/messages",
     json.dumps({{"model": "x", "max_tokens": 100, "messages": [{{"role": "user", "content": "hi"}}]}}).encode(),
@@ -167,14 +167,13 @@ request = urllib.request.Request(os.environ["ANTHROPIC_BASE_URL"] + "/v1/message
 out["reply"] = json.load(urllib.request.urlopen(request, timeout=10))
 open({str(tmp_path / "record.json")!r}, "w").write(json.dumps(out))
 """)
-    claude.chmod(0o755)
     from mlab.core.io import pinned_claude_version
     version = tmp_path / "bin"
     version.mkdir()
     # require_pinned_claude() asks the binary for its version first.
     (version / "claude").write_text(f"""#!/bin/sh
 if [ "$1" = "--version" ]; then echo "{pinned_claude_version()} (Claude Code)"; exit 0; fi
-exec {claude} "$@"
+exec {shlex.quote(sys.executable)} {shlex.quote(str(script))} "$@"
 """)
     (version / "claude").chmod(0o755)
     try:

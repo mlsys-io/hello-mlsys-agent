@@ -83,10 +83,19 @@ other front ends can reuse them from a pinned tag.
 
 ```bash
 (cd packages/simulator && ../../.venv/bin/python -m unittest discover -s tests)
-(cd packages/lab && ../../.venv/bin/python -m pytest -q)
+packages/lab/scripts/verify-cli.sh
 ```
 
-CI (`.github/workflows/ci.yml`) runs both suites, the scripted demos on the fixture and the simulator, the
+To run the lab's browser tests after setup, install Chromium in the checkout:
+
+```bash
+cd packages/lab/frontend
+npm ci
+npm run install:browser
+npm run test:browser
+```
+
+CI (`.github/workflows/ci.yml`) runs the Python and browser tests, the scripted demos on the fixture and the simulator, the
 calibration-loop tests and ledger check (`tests/`, `scripts/calibration/loop.py verify`), a standalone install
 of the lab, and a mirror dry run. `live-eval.yml` smoke-tests the real models nightly when
 their secrets are set.

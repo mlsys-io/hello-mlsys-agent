@@ -99,9 +99,9 @@ def initialize(destination, task_id, simulator="mlsys", provider=None, hardware=
     require(ROLES.get(simulator) == "simulator" and ROLES.get(hardware) == "hardware", "E_SCHEMA", "unknown simulator or hardware backend", 2)
     require(simulator == "mlsys" or not (simulator_profile or simulator_url), "E_SCHEMA", "Simulator profile/URL require the mlsys backend", 2)
     require((hardware == "remote") == bool(hardware_url), "E_SCHEMA", "--hardware remote needs --hardware-url, and only it", 2)
-    from ..backends.simulator_profiles import PROFILE, prepare, service_settings
-    require(simulator_profile in {None, PROFILE}, "E_SCHEMA", "Unknown simulator profile", 2)
-    service = service_settings(simulator_url) if simulator == "mlsys" else None
+    from ..backends.simulator_profiles import PROFILES, prepare, service_settings
+    require(simulator_profile is None or simulator_profile in PROFILES, "E_SCHEMA", "Unknown simulator profile", 2)
+    service = service_settings(simulator_url, simulator_profile) if simulator == "mlsys" else None
     destination = Path(destination).resolve()
     require(not destination.exists(), "E_SCHEMA", "destination exists; choose a new directory", 2)
     source = ROOT / "tasks" / TASKS[task_id]

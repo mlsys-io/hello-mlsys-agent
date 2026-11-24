@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Agent catalog `mlsys-agent-catalog-v2` adds the RTX 5080 (`rtx5080`: 16 GiB, 960 GB/s, 112.6 dense BF16
+  TFLOPS from NVIDIA's RTX Blackwell whitepaper v1.1, Table 4; the 225.1 figure is the with-sparsity column and is
+  not used). `mlsys-agent-catalog-v1` keeps exactly its RX9070XT-only support, so requests and evidence written
+  against it are unchanged; a v1 request naming `rtx5080` is `UNKNOWN_HARDWARE_ID`. Declared rates remain nominal
+  and uncalibrated.
 - Portable CPU domain-gap analysis and an exclusive local-draft freezer with
   required output/study IDs, bounded smoke options and complete prediction
   payloads. New drafts do not regenerate historical byte commitments.

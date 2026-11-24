@@ -5,10 +5,23 @@ import json
 from ..contracts import Candidate
 from ..core.io import ROOT, atomic, dump, hashed, load, require
 
-PROFILE = "protocol-v1.20"
+PROFILE = "protocol-v1.20"  # the default exercise profile; others are chosen explicitly
 ALIASES = {"llm-0.6b": "qwen3-0.6b", "llm-1.7b": "qwen3-1.7b", "llm-4b": "qwen3-4b"}
 NOTICE = ("Integration exercise: Qwen3 BF16 models on RX9070XT. These configurations differ from the original "
           "course baselines. Simulation is uncalibrated; sandbox measurements use demonstration data.")
+
+# One exercise profile per target GPU. `catalog_version` is the simulator catalog that publishes the device: a profile
+# never moves to a newer catalog than the one that introduced its hardware, so v1.20 numbers stay byte-identical.
+PROFILES = {
+    "protocol-v1.20": {"hardware": "rx9070xt", "label": "RX9070XT", "catalog_version": "mlsys-agent-catalog-v1",
+                       "notice": NOTICE},
+    "protocol-v1.21": {"hardware": "rtx5080", "label": "RTX5080", "catalog_version": "mlsys-agent-catalog-v2",
+                       "notice": ("Integration exercise: Qwen3 BF16 models on an NVIDIA RTX 5080 (16 GB, 960 GB/s, "
+                                  "112.6 dense BF16 TFLOPS, from NVIDIA's published specifications). These configurations "
+                                  "differ from the original course baselines. Simulation is uncalibrated: it predicts "
+                                  "and ranks designs; the same card is available as a real GPU sandbox to measure the "
+                                  "ones that matter.")},
+}
 
 
 # The simulator release an external HTTP service must report. The in-process
@@ -16,27 +29,28 @@ NOTICE = ("Integration exercise: Qwen3 BF16 models on RX9070XT. These configurat
 HTTP_VERSION = "1.24.0"
 
 
-def service_settings(base_url=None):
+def service_settings(base_url=None, profile=None):
     """No URL: the in-tree simulator in-process when installed, else the loopback service."""
     from .simulator_http import INPROCESS, SimulatorHTTPClient, SimulatorInProcessClient, inprocess_available
     if base_url is None and inprocess_available():
         endpoint, version = INPROCESS, SimulatorInProcessClient.version()
     else:
         endpoint, version = SimulatorHTTPClient(base_url or "http://127.0.0.1:8877").base_url, HTTP_VERSION
-    return {"base_url": endpoint, "catalog_version": "mlsys-agent-catalog-v1", "version": version,
+    return {"base_url": endpoint, "catalog_version": PROFILES[profile or PROFILE]["catalog_version"], "version": version,
             "model_aliases": dict(ALIASES)}
 
 
 def prepare(root, task, catalog, profile):
     """Create a disclosed session-local task variant; never edit source tasks."""
-    require(profile == PROFILE, "E_SCHEMA", "Unknown simulator exercise profile", 2)
+    require(profile in PROFILES, "E_SCHEMA", "Unknown simulator exercise profile", 2)
+    hardware, notice = PROFILES[profile]["hardware"], PROFILES[profile]["notice"]
     task_id = task["id"]
     original = deepcopy(task["frozen"])
     models = ["llm-4b", "llm-0.6b"] if task_id == "9.3" else ["llm-0.6b", "llm-1.7b", "llm-4b"]
-    infra_id = "rx9070xt_x4" if task_id == "9.3" else "rx9070xt_x1"
+    infra_id = f"{hardware}_x4" if task_id == "9.3" else f"{hardware}_x1"
     catalog["models"].update({"llm-0.6b": 0.6, "llm-1.7b": 1.7, "llm-4b": 4.0})
     catalog["infra"][infra_id] = {"id": infra_id, "nodes": [{"id": "node0", "devices": [
-        {"id": f"gpu{i}", "hardware": "rx9070xt"} for i in range(4 if task_id == "9.3" else 1)]}]}
+        {"id": f"gpu{i}", "hardware": hardware} for i in range(4 if task_id == "9.3" else 1)]}]}
     task.update(status="integration_exercise", source=task["source"] + "; explicit " + PROFILE,
                 infra_options=[infra_id])
     enum = lambda values: {"type": "enum", "values": values}
@@ -62,14 +76,14 @@ def prepare(root, task, catalog, profile):
         atomic(path, "".join(json.dumps(row) + "\n" for row in rows), text=True)
         task["frozen"]["workload_requests"]["sha256"] = hashed(path)
     meta = root / "task" / task["frozen"]["workload_meta"]["path"]
-    atomic(meta, {"schema": "mlab.v1", "task": task_id, "profile": profile, "notice": NOTICE,
+    atomic(meta, {"schema": "mlab.v1", "task": task_id, "profile": profile, "notice": notice,
                   "original_source": original, "requests": len(rows), "mode": task["workload_mode"]})
     task["frozen"]["workload_meta"]["sha256"] = hashed(meta)
-    atomic(root / "task/profile.json", {"id": profile, "notice": NOTICE, "original_source": original,
+    atomic(root / "task/profile.json", {"id": profile, "notice": notice, "original_source": original,
                                         "model_aliases": {model: ALIASES[model] for model in models}})
     atomic(root / "task/quality_table.yaml", {"schema": "mlab.v1", "task": task_id, "status": "not_evaluated",
         "source": "No measured quality evidence for this integration exercise", "entries": []})
-    atomic(root / "task/GUIDE.md", "# Integration exercise\n\n" + NOTICE + "\n\n"
+    atomic(root / "task/GUIDE.md", "# Integration exercise\n\n" + notice + "\n\n"
         "Keep request IDs, lengths, arrivals and dependency gaps unchanged. Choose configurations from this session's examples. "
         "Explore the original task question, compare runs and explain the evidence limits. "
         "Quality is not evaluated. Repeatability of a deterministic simulation does not establish hardware stability.\n", text=True)

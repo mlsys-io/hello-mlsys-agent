@@ -67,7 +67,7 @@ def _serving(request: dict) -> dict:
 
 
 def _device_map(request: dict) -> dict:
-    return {device["id"]: resolve_agent_device(device["hardware"], device["id"])
+    return {device["id"]: resolve_agent_device(device["hardware"], device["id"], request["catalog_version"])
             for node in request["infra"]["nodes"] for device in node["devices"]}
 
 

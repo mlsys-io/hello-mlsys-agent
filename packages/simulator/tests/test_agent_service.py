@@ -12,7 +12,8 @@ from unittest.mock import patch
 from mlsys_sim.agent_catalog import CATALOG_VERSION
 from mlsys_sim.agent_contract import validate_agent_response
 from mlsys_sim.agent_service import (MAX_AGENT_BODY_BYTES, MAX_AGENT_WALL_S,
-                                      create_agent_server, get_agent_service_catalog, run_agent_isolated)
+                                      create_agent_server, get_agent_service_catalog, handle_agent_request,
+                                      run_agent_isolated)
 
 
 def agent_fixture():
@@ -36,6 +37,34 @@ def agent_fixture():
 
 def body_fixture():
     return json.dumps(agent_fixture(), ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
+
+
+class InProcessAgentTests(unittest.TestCase):
+    """``handle_agent_request`` returns what ``POST /v1/simulate`` would send, without a socket."""
+
+    def test_success_matches_the_http_body_contract(self):
+        raw = body_fixture()
+        status, body = handle_agent_request(raw)
+        self.assertEqual(status, 200, body)
+        self.assertNotIn("ok", body)
+        self.assertEqual(body["evidence_level"], "simulated")
+        self.assertEqual(body["input_sha256"], "sha256:" + hashlib.sha256(raw).hexdigest())
+        validate_agent_response(raw, body)
+
+    def test_unknown_model_is_422_with_structured_error(self):
+        request = agent_fixture()
+        request["strategy"]["deployments"][0]["model"] = "llm-3b"
+        status, body = handle_agent_request(json.dumps(request).encode())
+        self.assertEqual(status, 422)
+        self.assertEqual(body["error"]["code"], "UNKNOWN_MODEL_ID")
+        self.assertEqual(set(body), {"error"})
+
+    def test_worker_failure_maps_to_the_same_status_as_http(self):
+        status, body = handle_agent_request(body_fixture(), lambda raw, timeout: {
+            "ok": False, "error": {"code": "AGENT_TIMEOUT", "message": "slow", "field": None}})
+        self.assertEqual((status, body["error"]["code"]), (504, "AGENT_TIMEOUT"))
+        status, body = handle_agent_request(body_fixture(), lambda raw, timeout: {"ok": False, "error": "bad"})
+        self.assertEqual((status, body["error"]["code"]), (500, "AGENT_WORKER_FAILED"))
 
 
 class AgentWorkerTests(unittest.TestCase):

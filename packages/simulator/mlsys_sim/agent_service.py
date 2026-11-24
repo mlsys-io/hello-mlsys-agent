@@ -86,6 +86,33 @@ def _simulation_error(error: SimulationError) -> dict:
     return {"code": error.code, "message": message, "field": field}
 
 
+def handle_agent_request(raw: bytes,
+                         runner: Callable[[bytes, float], dict] = run_agent_isolated) -> tuple[int, dict]:
+    """Run one Agent request without HTTP and return ``(status, JSON body)``.
+
+    This is the transport-independent core of ``POST /v1/simulate``. In-process
+    clients get exactly the status and body the loopback service would send.
+    """
+    from .agent_adapter import decode_agent_request, validate_agent_support
+
+    try:
+        request = decode_agent_request(raw)
+        validate_agent_support(request)
+        packet = runner(raw, request["evaluation"]["timeout_s"])
+        if packet.get("ok") is True:
+            validate_agent_response(raw, packet["response"])
+            return 200, packet["response"]
+        error = packet.get("error")
+        if not _valid_error(error):
+            return 500, {"error": {"code": "AGENT_WORKER_FAILED", "message": "Invalid simulation worker response",
+                                   "field": None}}
+        return _status_for_error(error["code"]), {"error": {"code": error["code"], "message": error["message"],
+                                                            "field": error.get("field")}}
+    except SimulationError as error:
+        detail = _simulation_error(error)
+        return _status_for_error(detail["code"]), {"error": detail}
+
+
 def get_agent_service_catalog() -> dict:
     catalog = get_agent_catalog()
     catalog["http"] = {
@@ -139,8 +166,6 @@ class AgentHandler(WebHandler):
         self._json(200, get_agent_service_catalog())
 
     def do_POST(self) -> None:
-        from .agent_adapter import decode_agent_request, validate_agent_support
-
         if not self._local():
             return
         if self.path != "/v1/simulate":
@@ -172,21 +197,12 @@ class AgentHandler(WebHandler):
             if len(raw) != length:
                 self._error(400, "INVALID_AGENT_BODY", "Incomplete request body", "body")
                 return
-            request = decode_agent_request(raw)
-            validate_agent_support(request)
-            packet = self.server.agent_runner(raw, request["evaluation"]["timeout_s"])
-            if packet.get("ok") is True:
-                validate_agent_response(raw, packet["response"])
-                self._json(200, packet["response"])
+            status, body = handle_agent_request(raw, self.server.agent_runner)
+            if status == 200:
+                self._json(200, body)
             else:
-                error = packet.get("error")
-                if not _valid_error(error):
-                    self._error(500, "AGENT_WORKER_FAILED", "Invalid simulation worker response")
-                    return
-                self._error(_status_for_error(error["code"]), error["code"], error["message"], error.get("field"))
-        except SimulationError as error:
-            detail = _simulation_error(error)
-            self._error(_status_for_error(detail["code"]), detail["code"], detail["message"], detail["field"])
+                detail = body["error"]
+                self._error(status, detail["code"], detail["message"], detail.get("field"))
         except OSError:
             # A disconnected client does not cancel the completed/running job.
             self.close_connection = True

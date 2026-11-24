@@ -10,9 +10,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 keywords = ["llm", "inference", "simulation", "memory-planning", "mlsys"]
-# The owner has deferred license selection. Add an SPDX license and LICENSE
-# before publishing; an omitted license does not grant open-source permissions.
-license-files = []
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Education",
@@ -37,7 +36,8 @@ mlsys_internal_capture = "mlsys_sim.vllm_hooks:register_vllm_hooks"
 
 [project.urls]
 "Design plan" = "https://gist.github.com/eyuansu62/f91df8b7597801ca4fd91bb3bb8c98cc"
-"Source" = "https://github.com/eyuansu62/mlsys-simulator"
+"Source" = "https://github.com/mlsys-io/hello-mlsys-agent/tree/main/packages/simulator"
+"Mirror" = "https://github.com/eyuansu62/mlsys-simulator"
 
 [tool.setuptools]
 packages = ["mlsys_sim", "mlsys_sim.web_assets"]

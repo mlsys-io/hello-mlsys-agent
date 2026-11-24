@@ -46,8 +46,9 @@ profiles, calibration, grouped holdout evaluation and run/candidate comparison.
 User-supplied AMD and NVIDIA reference packages inform the import and audit
 contracts; raw packages and prompt/output text are not distributed with this
 library. Their coverage does not establish general hardware accuracy. The
-source is on [GitHub](https://github.com/eyuansu62/mlsys-simulator), the license
-is pending selection, and no package has been published to PyPI.
+source is developed in [hello-mlsys-agent](https://github.com/mlsys-io/hello-mlsys-agent/tree/main/packages/simulator)
+and mirrored read-only to [eyuansu62/mlsys-simulator](https://github.com/eyuansu62/mlsys-simulator).
+It is MIT licensed (see [LICENSE](LICENSE)); no package has been published to PyPI.
 
 For the course, start with the [six runnable workflows](docs/course-workflows.md#run-the-supplied-experiments).
 Reports contain HTML/CSV/SVG and explicit prediction provenance. The 52-node
@@ -469,5 +470,5 @@ twine check dist/*
 
 CI configuration is included. Refer to the validation report and actual workflow
 runs for executed checks; this README does not imply remote CI or hardware
-validation passed. License selection and any PyPI publication remain separate
-steps in the [release checklist](docs/releasing.md).
+validation passed. Any PyPI publication remains a separate step in the
+[release checklist](docs/releasing.md).

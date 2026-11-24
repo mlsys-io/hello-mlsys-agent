@@ -71,7 +71,7 @@ runner execute the same code:
 
 ```bash
 python -m mlab.jobs simulate < payload.json                                   # in the workspace
-docker run --rm -i ghcr.io/mlsys-io/hello-mlsys-agent:<tag> simulate < payload.json
+docker run --rm -i --user mlab --network none ghcr.io/mlsys-io/hello-mlsys-agent:<tag> simulate < payload.json
 ```
 
 Tags `vX.Y.Z` publish the image to GHCR (`.github/workflows/image.yml`); deployments pin its digest. A job

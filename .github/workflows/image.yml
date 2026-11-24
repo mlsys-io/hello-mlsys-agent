@@ -36,6 +36,10 @@ jobs:
           # A runner also replaces the entrypoint, so plain python3 must import the jobs.
           docker run --rm --network none --entrypoint python3 local/hello-mlsys-agent:ci -c 'import mlab.jobs, mlsys_sim'
           python3 -c "import json; d = json.load(open('sweep.json')); assert d['ok'] and d['reference']['best']['value'] > 0, d; print('sweep ok', d['reference']['best']['value'])"
+          echo '{"task":"9.2"}' | docker run --rm -i --network none --user mlab local/hello-mlsys-agent:ci templates > templates.json
+          python3 -c "import json; t = json.load(open('templates.json')); print(json.dumps({'task': '9.2', 'candidates': t['templates'][:1]}))" \
+            | docker run --rm -i --network none --user mlab local/hello-mlsys-agent:ci evaluate > evaluate.json
+          python3 -c "import json; r = json.load(open('evaluate.json'))['results'][0]; assert r['meets_constraints'] is True, r; print('evaluate ok', r['objective'])"
       - name: Push
         if: startsWith(github.ref, 'refs/tags/v')
         env:

@@ -107,3 +107,47 @@ def test_unknown_and_reserved_jobs():
     with pytest.raises(JobError) as error:
         run("measure", "{}")
     assert error.value.code == "E_NOT_IMPLEMENTED"
+
+
+@pytest.mark.parametrize("task", ["9.1", "9.2", "9.3"])
+def test_templates_describe_the_exercise(task):
+    out = json.loads(run("templates", json.dumps({"task": task})))
+    ids = [t["id"] for t in out["templates"]]
+    assert ids[0] == "baseline" and len(ids) == len(set(ids)) >= 2
+    assert out["task"]["id"] == task and out["task"]["decision_space"] and out["profile"]["id"] == PROFILE
+
+
+def test_evaluate_grades_designs_and_rejects_out_of_space_ones():
+    base = json.loads(run("templates", json.dumps({"task": "9.2"})))["templates"][0]
+    c4 = copy.deepcopy(base) | {"id": "c4"}
+    c4["strategy"]["serving"]["max_concurrency"] = 4
+    bad = copy.deepcopy(base) | {"id": "bad"}
+    bad["strategy"]["serving"]["max_concurrency"] = 999
+    out = json.loads(run("evaluate", json.dumps({"task": "9.2", "candidates": [base, c4, bad],
+                                                 "workloads": ["development", "long_prompt_distribution"]})))
+    rows = {(r["candidate_id"], r.get("workload")): r for r in out["results"]}
+    assert rows[("baseline", "development")]["meets_constraints"] is True
+    assert rows[("baseline", "development")]["objective"] == {"direction": "max", "metric": "goodput_tok_s", "value": 22.4}
+    assert rows[("c4", "development")]["meets_constraints"] is False
+    assert rows[("c4", "development")]["metrics"]["ttft_ms.p99"] > 2000
+    assert rows[("bad", None)]["status"] == "rejected" and "outside decision space" in rows[("bad", None)]["error"]["message"]
+
+
+def test_evaluate_matches_the_workspace_simulate_path(tmp_path):
+    """The job's request bytes are the lab's own, so its numbers equal a workspace run of the same design."""
+    raw = requests_for(tmp_path)[0]
+    expected = SimulatorInProcessClient().simulate(raw)["result"]["metrics"]
+    base = json.loads(run("templates", json.dumps({"task": "9.2"})))["templates"][0]
+    [row] = json.loads(run("evaluate", json.dumps({"task": "9.2", "candidates": [base]})))["results"]
+    assert row["metrics"]["ttft_ms.p99"] == expected["ttft_ms"]["p99"]
+
+
+@pytest.mark.parametrize("payload, code", [
+    ({"task": "9.9", "candidates": [{}]}, "E_SCHEMA"),
+    ({"task": "9.2", "candidates": [{}], "workloads": ["nope"]}, "E_SCHEMA"),
+    ({"task": "9.2", "candidates": [{}] * 25, "workloads": ["development", "short_prompt_distribution"]}, "E_BUDGET"),
+])
+def test_evaluate_refuses_bad_requests(payload, code):
+    with pytest.raises(JobError) as error:
+        run("evaluate", json.dumps(payload))
+    assert error.value.code == code

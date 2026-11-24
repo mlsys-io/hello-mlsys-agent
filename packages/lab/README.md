@@ -1,5 +1,7 @@
 # hello-mlsys-lab
 
+> **Read-only mirror.** This repository is published from [`packages/lab`](https://github.com/mlsys-io/hello-mlsys-agent/tree/main/packages/lab) in [mlsys-io/hello-mlsys-agent](https://github.com/mlsys-io/hello-mlsys-agent). Open issues and pull requests there; commits pushed here directly block the next sync until they are merged back there.
+
 The learning workspace for weeks 6–8 of hello-mlsys, available as a local course page and in the terminal. Students learn through conversation with a Codex assistant using GPT-6 Luna or SoC Qwen 27B: ask about the task, work through an idea, plan and run experiments, investigate earlier results, and compare explanations. Experiment editors, execution history and charts support that conversation, with direct controls available throughout.
 
 The page keeps task and session navigation on the left, task information and evidence in the center, and conversation on the right. Configuration histories, measurement analysis, optional reflections and full reports stay in the workspace. A new conversation starts a clean session; earlier work remains in its original session, and only the task's hardware budget is shared.

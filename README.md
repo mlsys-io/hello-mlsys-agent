@@ -86,11 +86,11 @@ other front ends can reuse them from a pinned tag.
 packages/lab/scripts/verify-cli.sh
 ```
 
-To run the lab's browser tests after setup, install Chromium in the checkout:
+After setup, rebuild the course page and run its browser tests with a checkout-local Chromium.
 
 ```bash
+packages/lab/scripts/build-web.sh
 cd packages/lab/frontend
-npm ci
 npm run install:browser
 npm run test:browser
 ```

@@ -68,10 +68,13 @@ jobs:
             uv run --no-sync mlab demo --task "$task" --out "$RUNNER_TEMP/demo-fixture-$task"
             uv run --no-sync mlab demo --task "$task" --simulator mlsys --out "$RUNNER_TEMP/demo-mlsys-$task"
           done
+      - name: Verify the bundled workbench matches its source
+        run: |
+          packages/lab/scripts/build-web.sh
+          git diff --exit-code --stat -- packages/lab/src/mlab/web/static/workbench
       - name: Lab browser tests
         working-directory: packages/lab/frontend
         run: |
-          npm ci
           npm run install:browser -- --with-deps
           npm run test:browser
 

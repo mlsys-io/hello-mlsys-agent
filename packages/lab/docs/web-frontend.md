@@ -75,7 +75,7 @@ npm run dev
 
 The Vite proxy expects the Python server on port 8765. Open the Vite address under `/static/workbench/`. The generated production assets, not the development server, are used by `mlab web`.
 
-To run the API and browser checks, start in the lab directory:
+Run the API and browser checks from the lab directory.
 
 ```bash
 scripts/verify-cli.sh

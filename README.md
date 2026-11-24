@@ -65,6 +65,8 @@ runner execute the same code:
 | Job | Input | Output |
 | --- | --- | --- |
 | `simulate` | `{"requests": [<mlab.simulator.v1 request text>, ...]}` | each response exactly as `POST /v1/simulate` returns it |
+| `templates` | `{"task": "9.2"}` | the exercise's objective, constraints, decision space, holdouts and template designs |
+| `evaluate` | `{"task", "candidates": [...], "seeds", "workloads"}` | per design, seed and workload: metrics, constraint verdicts and the objective; out-of-space designs are rejected with the reason |
 | `sweep` | `{"task": "9.2"}` | the reference optimum for the exercise profile |
 | `calibrate` | train and holdout datasets, the current Profile, a version | the gate's decision and the fitted Profile |
 | `measure` | reserved for GPU sandbox measurements | |

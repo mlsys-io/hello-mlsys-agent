@@ -128,6 +128,7 @@ mlab demo --simulator mlsys --out workspaces/demo-simulated  # the same walk on 
 ```
 
 Tests that execute the real pinned Claude Code against a local fake model are opt-in (`MLAB_RUN_CLAUDE_TESTS=1`).
+`scripts/e2e/fresh-student.mjs` walks the course page as a new student with the real configured models (a question, a simulated experiment, a teacher question, a sandbox measurement), approving the cards in the browser; see its header for setup.
 Passing offline tests does not establish the quality or availability of the real model.
 
 The recording scripts under `frontend/scripts/record-*.mjs` and the galleries they build document earlier

@@ -11,8 +11,9 @@ from ..core.metrics import calculate, verdict
 from ..core.store import Store, now
 from . import llm
 
-BACKEND_VERSIONS = {"fixture": "0.2.0-fixture.1", "llm": "0.2.0-llm.1", "standin": "0.1.0-standin.1", "mlsys": "0.1.0-http.1"}
-ROLES = {"fixture": "simulator", "llm": "simulator", "standin": "hardware", "mlsys": "simulator"}
+BACKEND_VERSIONS = {"fixture": "0.2.0-fixture.1", "llm": "0.2.0-llm.1", "standin": "0.1.0-standin.1", "mlsys": "0.1.0-http.1",
+                    "remote": "0.1.0-executor.1"}
+ROLES = {"fixture": "simulator", "llm": "simulator", "standin": "hardware", "mlsys": "simulator", "remote": "hardware"}
 PREFIX = {"simulator": "sim", "hardware": "hw"}
 
 # The simulators' shared time model: a fixed cost per request, prefill time per input token,
@@ -68,6 +69,12 @@ class LocalBackend:
                 metrics=["ttft_ms", "tpot_ms", "e2e_ms", "completion_rate", "throughput_tok_s", "goodput_tok_s", "decode_tok_s", "vram_peak_gib", "kv_peak_gib", "makespan_s"],
                 notes=["External simulator HTTP API. Uncalibrated; model, precision and hardware support follow its public catalog.",
                        "Independent service time and critical path time are unavailable."])
+        if self.name == "remote":
+            return Capabilities(backend=self.name, version=BACKEND_VERSIONS[self.name], role="hardware", evidence_level="measured",
+                tasks=["9.1", "9.2", "9.3"], mechanisms=["continuous_batching", "chunked_prefill", "multi_replica", "tensor_parallel",
+                                                         "dag_arrival", "priority_scheduling", "kv_budget", "preemption", "prefix_cache"],
+                metrics=["ttft_ms", "tpot_ms", "e2e_ms", "completion_rate", "throughput_tok_s", "goodput_tok_s", "decode_tok_s", "vram_peak_gib", "kv_peak_gib", "makespan_s", "critical_path_s"],
+                notes=["A GPU sandbox over mlab.executor.v1. Evidence is measured only when the sandbox declares a measured source and a complete identity."])
         mechanisms = ["continuous_batching", "chunked_prefill", "multi_replica", "tensor_parallel", "dag_arrival", "priority_scheduling"]
         if self.name == "llm":
             mechanisms += ["kv_budget", "preemption", "prefix_cache"]
@@ -337,7 +344,7 @@ def coverage(run, spec, requests):
         "Demo data, not real system performance.", "Mock seed/repeat differences are synthetic, not independent hardware measurements."]}
 
 
-def finalize(root, run_id, status, failure, rows, extra, logs, provenance, *, external=None, wire=None):
+def finalize(root, run_id, status, failure, rows, extra, logs, provenance, *, external=None, wire=None, evidence=None):
     root = Path(root)
     store = Store(root)
     try:
@@ -382,7 +389,7 @@ def finalize(root, run_id, status, failure, rows, extra, logs, provenance, *, ex
             backend.update(external["backend"], adapter_version=BACKEND_VERSIONS[source], service_source="http")
         result = dump(RunResult(run_id=run_id, task=spec["task"], candidate_id=spec["candidate_id"], spec_hash=run["spec_hash"],
                   backend=backend,
-                  status=status, verdict=judgment, evidence_level="simulated" if source == "mlsys" else "mock", failure_class=failure, constraints=constraints,
+                  status=status, verdict=judgment, evidence_level=evidence or ("simulated" if source == "mlsys" else "mock"), failure_class=failure, constraints=constraints,
                   metrics=metrics, unsupported_metrics=unsupported, quality=q, coverage=span, requests=counts))
         for name, content in (("requests.jsonl", "".join(json.dumps(r) + "\n" for r in rows)),
                               ("events.jsonl", "".join(json.dumps({"request_id": r["request_id"], "ready_ms": r["ready_ms"], "finished_ms": r["finished_ms"]}) + "\n" for r in rows)),
@@ -391,7 +398,8 @@ def finalize(root, run_id, status, failure, rows, extra, logs, provenance, *, ex
         atomic(folder / "result.json", result)
         artifacts = {name: hashed(folder / name) for name in ["spec.json", "result.json", "requests.jsonl", "events.jsonl", "logs.txt"]}
         for name, raw in (wire or {}).items():
-            require(name in {"simulator-request.json", "simulator-response.json", "simulator-exchange.json"}, "E_SCHEMA", "Unexpected wire artifact")
+            require(name in {"simulator-request.json", "simulator-response.json", "simulator-exchange.json", "measurement.json"},
+                    "E_SCHEMA", "Unexpected wire artifact")
             (folder / name).write_bytes(raw)
             artifacts[name] = hashed(folder / name)
         manifest = {"schema": "mlab.v1", "spec": spec, "spec_hash": run["spec_hash"], "seed": spec["execution"]["seed"],

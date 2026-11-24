@@ -30,7 +30,9 @@ def parser():
     init.add_argument("--task", choices=["9.1", "9.2", "9.3"], default="9.2")
     init.add_argument("--simulator", "--backend", dest="simulator", choices=["mlsys", "fixture", "llm"], default="mlsys",
                       help="Fast flywheel backend: mlsys is the in-tree simulator (--backend is the older name)")
-    init.add_argument("--hardware", choices=["standin"], default="standin", help="Slow flywheel backend")
+    init.add_argument("--hardware", choices=["standin", "remote"], default="standin",
+                      help="Slow flywheel backend: the stand-in, or a GPU sandbox over mlab.executor.v1 (--hardware-url)")
+    init.add_argument("--hardware-url", help="Base URL of the GPU sandbox service (MLAB_HARDWARE_TOKEN for its bearer token)")
     init.add_argument("--provider", help="Student agent profile under agent/profiles (default: qwen3.8-27b)")
     init.add_argument("--simulator-profile", choices=["protocol-v1.20"])
     init.add_argument("--simulator-url")
@@ -93,6 +95,7 @@ def parser():
     demo.add_argument("--task", choices=["9.1", "9.2", "9.3"], default="9.2")
     demo.add_argument("--simulator", choices=["fixture", "mlsys"], default="fixture",
                       help="fixture: scripted mock numbers; mlsys: the in-tree simulator, in-process")
+    demo.add_argument("--hardware-url", help="Measure on a GPU sandbox over mlab.executor.v1 instead of the stand-in")
     web = commands.add_parser("web", help="Serve the course page: one agent per task, on 127.0.0.1")
     web.add_argument("directory", nargs="?", default="mlsys-course", help="Course directory; created if missing. Each session started on the page is a workspace in it")
     web.add_argument("--simulator", choices=["mlsys", "fixture", "llm"], default="mlsys")
@@ -192,9 +195,10 @@ def finish(lab, wait, label):
     require(wait(30)["status"] == "completed", "E_BACKEND_UNAVAILABLE", label + " did not finish", 4)
 
 
-def demo(out, task, simulator="fixture"):
-    """Scripted student on a simulator and the hardware stand-in: one simulator round, simulator validation, one measurement."""
-    initialize(out, task, simulator, simulator_profile="protocol-v1.20" if simulator == "mlsys" else None)
+def demo(out, task, simulator="fixture", hardware_url=None):
+    """Scripted student on a simulator and the hardware stand-in (or a sandbox): one simulator round, simulator validation, one measurement."""
+    initialize(out, task, simulator, simulator_profile="protocol-v1.20" if simulator == "mlsys" else None,
+               hardware="remote" if hardware_url else "standin", hardware_url=hardware_url)
     lab = Lab(out)
     try:
         lab.new_workflow(example=True)
@@ -413,7 +417,7 @@ def main(argv=None):
                 from ..backends.simulator_profiles import NOTICE as EXERCISE, PROFILE
                 args.simulator_profile, disclosed = PROFILE, EXERCISE
             output = initialize(args.directory, args.task, args.simulator, args.provider, args.hardware, args.mode,
-                                args.simulator_profile, args.simulator_url)
+                                args.simulator_profile, args.simulator_url, args.hardware_url)
             if disclosed:
                 output["simulator_profile"] = {"id": args.simulator_profile, "notice": disclosed,
                                                "why": "--simulator mlsys defaults to this profile; see task/profile.json"}
@@ -431,7 +435,7 @@ def main(argv=None):
                 atomic(args.out / (model.__name__ + ".schema.json"), model.model_json_schema(by_alias=True))
             output = {"schemas": len(models), "result_path": str(args.out.resolve())}
         elif args.command == "demo":
-            output = demo(args.out, args.task, args.simulator)
+            output = demo(args.out, args.task, args.simulator, args.hardware_url)
         elif args.command == "web":
             from ..web.server import serve
             return serve(args.directory, args.simulator, args.provider, args.agent, args.port, not args.no_browser,

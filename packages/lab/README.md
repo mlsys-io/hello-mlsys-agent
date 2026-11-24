@@ -97,6 +97,16 @@ unlocks and conclusions, and denies edits to frozen evidence. The first launch a
 The slow flywheel defaults to the hardware stand-in (`--hardware standin`), which creates four kinds of gap by
 fixed rules, so comparing simulation with measurement can be practised before real sandboxes are connected.
 
+### GPU sandboxes
+
+`mlab init --hardware remote --hardware-url https://sandbox.example/` sends each approved measurement run to a
+GPU sandbox that speaks the `mlab.executor.v1` job API (`src/mlab/executors/base.py`): submit the run spec and
+its requests, poll until a terminal state, and receive one observation per request, memory peaks, the full
+hardware/software identity and a declared source. A run is `measured` evidence only when the sandbox declares a
+measured source with an explicit identity; the raw record is kept as `measurement.json` for calibration.
+`MLAB_HARDWARE_TOKEN` is sent as a bearer token. `tests/fake_executor.py` is a minimal reference service, and
+`mlab demo --hardware-url URL` smoke-tests a real one end to end.
+
 ## Course page
 
 ```bash

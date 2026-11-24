@@ -29,6 +29,9 @@ def work(root, run_id):
             from .backends.simulator_backend import execute
             execute(root, run, spec, config["simulator_service"])
             return
+        if backend == "remote":
+            measure_remotely(root, run_id, run, spec, config, store)
+            return
         requests = load_requests(root, spec)
         catalog = load(root / "task/catalog.json")
         infra = spec["infra"]
@@ -98,6 +101,35 @@ def work(root, run_id):
         finalize(root, run_id, "failed", "backend_error", [], {}, ["E_MOCK_INVALID: worker could not produce valid artifacts: " + type(error).__name__], {})
     finally:
         store.close()
+
+
+def measure_remotely(root, run_id, run, spec, config, store):
+    """A measurement on a GPU sandbox over mlab.executor.v1; the raw record is kept as measurement.json."""
+    from .contracts import RequestObservation
+    from .executors.remote import RemoteExecutor
+    requests = load_requests(root, spec)
+    store.begin()
+    current = store.get("run", run_id)
+    if current["status"] in TERMINAL:
+        store.rollback()
+        return
+    current.update(status="running", progress={"phase": "hardware_queue"})
+    store.put("run", run_id, current)
+    store.commit()
+    service = config["hardware_service"]
+    executor = RemoteExecutor(service["base_url"], poll_s=service.get("poll_s", 2.0), timeout_s=config["run_timeout_s"])
+    stopped = lambda: store.get("run", run_id)["status"] in {"cancelled", "timed_out", "failed"}
+    job, record = executor.execute(root, run, spec, requests, cancelled=stopped)
+    inputs = {row["request_id"]: row for row in requests}
+    rows = [RequestObservation(**{**observation, "depends_on": inputs[observation["request_id"]].get("depends_on", []),
+                                  "gap_after_deps_ms": inputs[observation["request_id"]].get("gap_after_deps_ms", 0)}).model_dump()
+            for observation in record.observations]
+    provenance = {"source": "remote hardware executor", "endpoint": service["base_url"], "job_id": job,
+                  "source_kind": record.source.kind, "source_reference": record.source.reference,
+                  "identity": record.identity.model_dump()}
+    finalize(root, run_id, "succeeded", None, rows, {"vram_peak_gib": record.vram_peak_gib, "kv_peak_gib": record.kv_peak_gib},
+             [*record.logs, f"Measured by {service['base_url']} job {job} ({record.source.kind})."], provenance,
+             wire={"measurement.json": record.model_dump_json().encode()}, evidence=record.evidence_level)
 
 
 if __name__ == "__main__":

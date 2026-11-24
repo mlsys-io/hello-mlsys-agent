@@ -88,7 +88,7 @@ def examples_directory(root, task_id):
 
 
 def initialize(destination, task_id, simulator="mlsys", provider=None, hardware="standin", mode="guided",
-               simulator_profile=None, simulator_url=None):
+               simulator_profile=None, simulator_url=None, hardware_url=None):
     from ..agent_env import DEFAULT_PROVIDER
     from ..backends.local import ROLES
     provider = provider or DEFAULT_PROVIDER
@@ -98,6 +98,7 @@ def initialize(destination, task_id, simulator="mlsys", provider=None, hardware=
     require(mode in MODES, "E_SCHEMA", "mode must be guided or open", 2)
     require(ROLES.get(simulator) == "simulator" and ROLES.get(hardware) == "hardware", "E_SCHEMA", "unknown simulator or hardware backend", 2)
     require(simulator == "mlsys" or not (simulator_profile or simulator_url), "E_SCHEMA", "Simulator profile/URL require the mlsys backend", 2)
+    require((hardware == "remote") == bool(hardware_url), "E_SCHEMA", "--hardware remote needs --hardware-url, and only it", 2)
     from ..backends.simulator_profiles import PROFILE, prepare, service_settings
     require(simulator_profile in {None, PROFILE}, "E_SCHEMA", "Unknown simulator profile", 2)
     service = service_settings(simulator_url) if simulator == "mlsys" else None
@@ -130,7 +131,8 @@ def initialize(destination, task_id, simulator="mlsys", provider=None, hardware=
     atomic(destination / ".mlab/config.json", {"schema": "mlab.v1", "task": task_id, "simulator": simulator, "hardware": hardware,
                                               "provider": provider, "mode": mode, "run_timeout_s": 1800, "created_at": now(),
                                               "simulator_profile": simulator_profile, "simulator_service": service,
-                                              "fixture_delay_s": 0, "hardware_delay_s": 0})
+                                              "fixture_delay_s": 0, "hardware_delay_s": 0,
+                                              **({"hardware_service": {"base_url": hardware_url.rstrip("/")}} if hardware_url else {})})
     write_local_settings(destination, provider)
     launcher = write_launcher(destination, profile)
     store = Store(destination)

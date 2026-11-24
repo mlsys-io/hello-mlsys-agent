@@ -1,0 +1,9 @@
+# Promotion gate for simulator Profiles fitted from sandbox measurements (scripts/calibration/loop.py).
+# Errors are the simulator's own holdout summary (mlsys-sim validate) on the dataset's fixed holdout split.
+schema: hello-mlsys-agent.calibration.v1
+holdout_fraction: 0.25   # grouped split, fixed at ingest
+split_seed: 42
+min_holdout_records: 4
+min_coverage: 0.5        # share of holdout records the candidate can predict without extrapolation
+max_mape_percent: 25.0   # step-time error budget
+regression_tolerance_percent: 2.0   # a candidate may not be worse than the current Profile by more than this (MAPE points)

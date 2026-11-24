@@ -10,6 +10,9 @@ A MeasurementRecord carries one observation per request (the lab's RequestObserv
 the full hardware/software identity the simulator's calibration contract requires (docs/calibration.md in
 packages/simulator), optional raw step records, and a declared source. Only `source.kind == "measured"` with a
 complete identity produces `measured` evidence; anything else stays `mock`.
+
+For the simulator improvement loop (calibration/README.md at the repository root), `step_records` use the
+simulator's step-observation schema and `identity.simulator_identity` carries the full simulator identity.
 """
 from typing import Any, Literal, Protocol
 

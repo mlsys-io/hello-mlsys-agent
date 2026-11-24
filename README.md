@@ -49,6 +49,11 @@ No model handy? `mlab demo --simulator mlsys --out demo` runs a scripted student
 - **Evidence is labelled honestly.** Simulator results are uncalibrated predictions (`simulated`). Fixture and
   stand-in results are placeholders (`mock`). Nothing here claims real GPU performance.
 
+**From sandbox to a better simulator.** `mlab init --hardware remote --hardware-url URL` measures on a GPU
+sandbox that speaks the `mlab.executor.v1` job API. Its step timings flow through
+[`calibration/`](calibration/README.md): export, ingest with a frozen holdout, then promote a new simulator
+Profile only if it beats the current one on that holdout and stays within the error budgets.
+
 Bring your own agent if you prefer: the workspace contract is `AGENTS.md` plus the `mlab` CLI. Other Claude Code
 model profiles live in `packages/lab/agent/profiles/`. See the [lab README](packages/lab/README.md) for details.
 
@@ -59,8 +64,9 @@ model profiles live in `packages/lab/agent/profiles/`. See the [lab README](pack
 (cd packages/lab && ../../.venv/bin/python -m pytest -q)
 ```
 
-CI (`.github/workflows/ci.yml`) runs both suites, the scripted demos on the fixture and the simulator, a
-standalone install of the lab, and a mirror dry run. `live-eval.yml` smoke-tests the real models nightly when
+CI (`.github/workflows/ci.yml`) runs both suites, the scripted demos on the fixture and the simulator, the
+calibration-loop tests and ledger check (`tests/`, `scripts/calibration/loop.py verify`), a standalone install
+of the lab, and a mirror dry run. `live-eval.yml` smoke-tests the real models nightly when
 their secrets are set.
 
 ### This repository is the source of truth

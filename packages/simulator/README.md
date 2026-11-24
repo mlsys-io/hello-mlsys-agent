@@ -1,5 +1,7 @@
 # MLSys Simulator
 
+> **Read-only mirror.** This repository is published from [`packages/simulator`](https://github.com/mlsys-io/hello-mlsys-agent/tree/main/packages/simulator) in [mlsys-io/hello-mlsys-agent](https://github.com/mlsys-io/hello-mlsys-agent). Open issues and pull requests there; commits pushed here directly block the next sync until they are merged back there.
+
 A deterministic CPU simulator for LLM serving experiments. It models request
 arrivals, batching, KV memory pressure, preemption and recomputation, with
 request timelines, per-rank memory accounting and service metrics. Optional

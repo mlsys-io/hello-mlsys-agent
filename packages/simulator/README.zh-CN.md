@@ -1,5 +1,7 @@
 # LLM 推理系统模拟器
 
+> **只读镜像。** 本仓库由 [mlsys-io/hello-mlsys-agent](https://github.com/mlsys-io/hello-mlsys-agent) 的 [`packages/simulator`](https://github.com/mlsys-io/hello-mlsys-agent/tree/main/packages/simulator) 发布。请在那里提交 issue 和 PR。
+
 [English](README.md) · [Python API](docs/api.md) · [校准](docs/calibration.md) ·
 [验证规范](docs/validation-protocol.md) · [系统规范](docs/specification.md) · [PP 与 CPU swap](docs/pipeline-and-swap.md) · [Prefix Cache 与分块预填充](docs/prefix-cache-and-chunking.md) · [混合批处理](docs/mixed-batching.md) · [多副本路由](docs/multi-replica.md) · [ROCm 采集](docs/rocm-collection.md) · [Qwen3 与 vLLM 内部 hook](docs/qwen3-and-vllm-hooks.md) · [原生 PP 采样与 Profile](docs/native-pp-capture.md) · [原生 PP 通信微基准与校准](docs/native-pp-communication.md) · [量化存储](docs/quantization.md) · [Workspace 与容量验证](docs/workspace-and-capacity.md)
 

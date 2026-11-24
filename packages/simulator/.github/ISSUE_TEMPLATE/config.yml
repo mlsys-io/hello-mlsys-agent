@@ -1,0 +1,6 @@
+# This repo is a read-only mirror; issues belong in the consolidated repo.
+blank_issues_enabled: false
+contact_links:
+  - name: Report it in hello-mlsys-agent
+    url: https://github.com/mlsys-io/hello-mlsys-agent/issues/new/choose
+    about: packages/simulator is developed in mlsys-io/hello-mlsys-agent; this repository only mirrors it.

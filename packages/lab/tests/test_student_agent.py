@@ -118,7 +118,7 @@ def test_gateway_raises_short_budgets_and_strips_inline_reasoning():
 
 def test_plain_http_is_limited_to_local_and_private_hosts(monkeypatch):
     monkeypatch.delenv("MLAB_ALLOW_HTTP", raising=False)
-    assert plain_http_allowed("127.0.0.1") and plain_http_allowed("192.168.6.10") and plain_http_allowed("localhost")
+    assert plain_http_allowed("127.0.0.1") and plain_http_allowed("10.20.30.40") and plain_http_allowed("localhost")
     assert not plain_http_allowed("example.com") and not plain_http_allowed("8.8.8.8")
     with pytest.raises(GatewayError, match="HTTPS"):
         Gateway("http://example.com/v1", "m", "k", "t")

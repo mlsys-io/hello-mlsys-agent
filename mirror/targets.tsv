@@ -1,0 +1,8 @@
+# prefix	repo	branch	tag_prefix	key_secret
+# One row per read-only mirror. Each prefix is split with `git subtree split`
+# (full history, no --squash) and pushed fast-forward only, never forced.
+# Fetches use https://github.com/<repo>.git (public, no key); pushes use
+# git@github.com:<repo>.git with the deploy key stored in secret <key_secret>.
+# Release tags named <tag_prefix><version> are pushed to the mirror as v<version>.
+packages/simulator	eyuansu62/mlsys-simulator	main	sim-v	MIRROR_KEY_SIMULATOR
+packages/lab	taowangcheng/hello-mlsys-lab	main	lab-v	MIRROR_KEY_LAB

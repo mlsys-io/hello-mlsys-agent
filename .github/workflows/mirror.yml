@@ -1,0 +1,66 @@
+name: Mirror
+
+# Pushes each package folder's split history to its read-only mirror repo.
+# Fast-forward only: a rejected push means someone committed to the mirror
+# directly; run scripts/mirror/absorb-upstream.sh <prefix> and open a PR.
+# Keep the matrix in sync with mirror/targets.tsv.
+
+on:
+  push:
+    branches: [main]
+    tags: ["sim-v*", "lab-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: mirror
+  cancel-in-progress: false
+
+jobs:
+  push:
+    if: github.repository == 'mlsys-io/hello-mlsys-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - prefix: packages/simulator
+            key: MIRROR_KEY_SIMULATOR
+          - prefix: packages/lab
+            key: MIRROR_KEY_LAB
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the deploy key
+        id: key
+        env:
+          KEY: ${{ secrets[matrix.key] }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::warning::secret ${{ matrix.key }} is not set; skipping the ${{ matrix.prefix }} mirror"
+            echo "present=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/mirror_key && chmod 600 ~/.ssh/mirror_key
+          # GitHub's published host key, pinned rather than trusted on first use.
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > ~/.ssh/known_hosts
+          echo "present=true" >> "$GITHUB_OUTPUT"
+      - name: Push (fast-forward only)
+        if: steps.key.outputs.present == 'true'
+        env:
+          GIT_SSH_COMMAND: ssh -i ~/.ssh/mirror_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+        run: scripts/mirror/push.sh "${{ matrix.prefix }}"
+      - name: Report a rejected push
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Mirror push rejected: ${{ matrix.prefix }}" \
+            --body "Run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID could not fast-forward the ${{ matrix.prefix }} mirror. Someone probably committed to it directly. Run \`scripts/mirror/absorb-upstream.sh ${{ matrix.prefix }}\` and open a PR; never force-push the mirror."

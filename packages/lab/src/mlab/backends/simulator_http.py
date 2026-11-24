@@ -1,6 +1,9 @@
-"""HTTP transport and lossless result adaptation for the external simulator.
+"""HTTP and in-process transports plus lossless result adaptation for the simulator.
 
-No engine imports, model aliases, scheduling or performance estimates live here.
+Both transports exchange the same ``mlab.simulator.v1`` bytes. The in-process one
+calls ``mlsys_sim.agent_service.handle_agent_request`` (the core of
+``POST /v1/simulate``) when the in-tree simulator is installed, so no server is needed.
+No model aliases, scheduling or performance estimates live here.
 The caller selects explicit catalog identities and retains the raw exchange.
 """
 import json
@@ -153,3 +156,60 @@ class SimulatorHTTPClient:
         except (ValueError, TypeError) as error:
             raise SimulatorProtocolError(str(error), raw) from error
         return {"result": result, "response_bytes": raw, "headers": headers}
+
+
+INPROCESS = "inprocess:mlsys_sim"
+
+
+def inprocess_available():
+    try:
+        from mlsys_sim.agent_service import handle_agent_request  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+class SimulatorInProcessClient:
+    """Same contract as ``SimulatorHTTPClient``, run in a bounded child process of this one."""
+
+    base_url = INPROCESS
+
+    def __init__(self, timeout_s=1830):
+        if type(timeout_s) not in {int, float} or not math.isfinite(timeout_s) or timeout_s <= 0:
+            raise ValueError("Simulation timeout must be positive and finite")
+        self.timeout_s = timeout_s
+
+    @staticmethod
+    def version():
+        import mlsys_sim
+        return mlsys_sim.__version__
+
+    def catalog(self):
+        from mlsys_sim.agent_service import get_agent_service_catalog
+        return get_agent_service_catalog()
+
+    def simulate(self, request_bytes):
+        if not isinstance(request_bytes, bytes):
+            raise TypeError("Pass exact UTF-8 request bytes")
+        RunRequest.model_validate_json(request_bytes, strict=True)
+        from mlsys_sim.agent_service import handle_agent_request
+        try:
+            status, body = handle_agent_request(request_bytes)
+        except Exception as error:  # the HTTP service maps the same failures to 500
+            raise SimulatorTransportError("In-process simulator failed: " + type(error).__name__) from error
+        raw = json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        headers = {"content-type": "application/json"}
+        if status != 200:
+            raise SimulatorAPIError(status, body.get("error") or {"code": "INVALID_RESPONSE", "message": ""}, raw, headers)
+        try:
+            result = adapt_response(request_bytes, decode_response(raw))
+        except (ValueError, TypeError) as error:
+            raise SimulatorProtocolError(str(error), raw) from error
+        return {"result": result, "response_bytes": raw, "headers": headers}
+
+
+def client_for(endpoint, timeout_s):
+    """The transport a workspace was configured with."""
+    if endpoint == INPROCESS:
+        return SimulatorInProcessClient(timeout_s=timeout_s)
+    return SimulatorHTTPClient(endpoint, timeout_s=timeout_s)

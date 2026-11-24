@@ -11,10 +11,19 @@ NOTICE = ("Integration exercise: Qwen3 BF16 models on RX9070XT. These configurat
           "course baselines. Simulation is uncalibrated; sandbox measurements use demonstration data.")
 
 
+# The simulator release an external HTTP service must report. The in-process
+# transport always uses the installed in-tree release instead.
+HTTP_VERSION = "1.24.0"
+
+
 def service_settings(base_url=None):
-    from .simulator_http import SimulatorHTTPClient
-    client = SimulatorHTTPClient(base_url or "http://127.0.0.1:8877")
-    return {"base_url": client.base_url, "catalog_version": "mlsys-agent-catalog-v1", "version": "1.20.0",
+    """No URL: the in-tree simulator in-process when installed, else the loopback service."""
+    from .simulator_http import INPROCESS, SimulatorHTTPClient, SimulatorInProcessClient, inprocess_available
+    if base_url is None and inprocess_available():
+        endpoint, version = INPROCESS, SimulatorInProcessClient.version()
+    else:
+        endpoint, version = SimulatorHTTPClient(base_url or "http://127.0.0.1:8877").base_url, HTTP_VERSION
+    return {"base_url": endpoint, "catalog_version": "mlsys-agent-catalog-v1", "version": version,
             "model_aliases": dict(ALIASES)}
 
 

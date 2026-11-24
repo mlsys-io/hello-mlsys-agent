@@ -1,4 +1,7 @@
-"""Exercise the public HTTP adapter through normal workbench execution records."""
+"""Exercise the public Agent API adapter through normal workbench execution records.
+
+Replay tests pin the HTTP transport (recorded 1.20 responses, relabelled to the
+configured pin); the in-process tests run the real in-tree simulator."""
 import hashlib
 import json
 
@@ -13,10 +16,13 @@ from mlab.web.course import Course
 from mlab.worker import work
 
 
-def setup(tmp_path, monkeypatch, task="9.2"):
+HTTP = "http://127.0.0.1:8877"
+
+
+def setup(tmp_path, monkeypatch, task="9.2", simulator_url=HTTP):
     root = tmp_path / "course"
     course = Course(root)
-    course.ensure("mlsys", simulator_profile="protocol-v1.20")
+    course.ensure("mlsys", simulator_profile="protocol-v1.20", simulator_url=simulator_url)
     session = course.create(task)
     workspace = root / session
     view = exploration.task_view(course, task)
@@ -34,6 +40,7 @@ def test_profile_worker_preserves_http_evidence_and_unknown_metrics(tmp_path, mo
     source = ROOT / "tasks"
     before = {str(path): hashed(path) for path in source.rglob("*") if path.is_file()}
     root = setup(tmp_path, monkeypatch, task)
+    pinned = load(root / ".mlab/config.json")["simulator_service"]["version"]
     captured = []
 
     def simulate(client, raw):
@@ -41,6 +48,7 @@ def test_profile_worker_preserves_http_evidence_and_unknown_metrics(tmp_path, mo
         captured.append(request)
         response = load(ROOT / "integrations/mlsys-simulator/evidence/agent-v1.20/responses" / f"task-{task}-protocol.json")
         response.update(input_sha256="sha256:" + hashlib.sha256(raw).hexdigest(), client_request_id=request["client_request_id"])
+        response["backend"]["version"] = pinned
         response["effective_config"] = {"infra": request["infra"], "strategy": request["strategy"]}
         return {"result": adapt_response(raw, response), "response_bytes": json.dumps(response).encode(), "headers": {}}
 
@@ -52,7 +60,7 @@ def test_profile_worker_preserves_http_evidence_and_unknown_metrics(tmp_path, mo
         result, spec = lab.result("sim_0001")
         assert result["status"] == "succeeded"
         assert result["evidence_level"] == "simulated"
-        assert result["backend"]["version"] == "1.20.0"
+        assert result["backend"]["version"] == pinned
         assert result["requests"]["completed"] == count
         assert result["coverage"]["in_domain"] is None
         from mlab.web.views import run_requests
@@ -214,3 +222,25 @@ def test_validation_matrix_distinguishes_unassessed_incomplete_and_violated():
     assert missing["simulator"] == ["development", "holdout:long"]
     rows.append(dict(role="simulator", split="development", holdout=None, status="succeeded", verdict="constraints_violated"))
     assert validation(lab, rows)[0]["simulator"]["development"] is False
+
+
+@pytest.mark.parametrize("task", ["9.1", "9.2", "9.3"])
+def test_inprocess_runs_the_real_in_tree_simulator(tmp_path, monkeypatch, task):
+    import mlsys_sim
+    monkeypatch.setattr(simulator_backend.SimulatorHTTPClient, "simulate",
+                        lambda *args: pytest.fail("In-process runs must not use HTTP"))
+    root = setup(tmp_path, monkeypatch, task, simulator_url=None)
+    service = load(root / ".mlab/config.json")["simulator_service"]
+    assert service["base_url"] == "inprocess:mlsys_sim"
+    assert service["version"] == mlsys_sim.__version__
+    work(root, "sim_0001")
+    lab = Lab(root)
+    try:
+        result, _ = lab.result("sim_0001")
+        assert result["evidence_level"] == "simulated"
+        assert result["backend"]["version"] == mlsys_sim.__version__
+        assert result["status"] in {"succeeded", "failed"}
+        manifest = load(root / lab.store.get("run", "sim_0001")["folder"] / "manifest.json")
+        assert manifest["provenance"]["source"] == "in-tree simulator, in-process"
+    finally:
+        lab.close()

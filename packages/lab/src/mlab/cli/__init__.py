@@ -85,6 +85,8 @@ def parser():
     demo = commands.add_parser("demo")
     demo.add_argument("--out", type=Path, required=True)
     demo.add_argument("--task", choices=["9.1", "9.2", "9.3"], default="9.2")
+    demo.add_argument("--simulator", choices=["fixture", "mlsys"], default="fixture",
+                      help="fixture: scripted mock numbers; mlsys: the in-tree simulator, in-process")
     web = commands.add_parser("web", help="Serve the course page: one agent per task, on 127.0.0.1")
     web.add_argument("directory", nargs="?", default="mlsys-course", help="Course directory; created if missing. Each session started on the page is a workspace in it")
     web.add_argument("--simulator", choices=["llm", "fixture", "mlsys"], default="llm")
@@ -170,9 +172,9 @@ def finish(lab, wait, label):
     require(wait(30)["status"] == "completed", "E_BACKEND_UNAVAILABLE", label + " did not finish", 4)
 
 
-def demo(out, task):
-    """Scripted student on fixture and the hardware stand-in: one simulator round, simulator validation, one measurement."""
-    initialize(out, task, "fixture")
+def demo(out, task, simulator="fixture"):
+    """Scripted student on a simulator and the hardware stand-in: one simulator round, simulator validation, one measurement."""
+    initialize(out, task, simulator, simulator_profile="protocol-v1.20" if simulator == "mlsys" else None)
     lab = Lab(out)
     try:
         lab.new_workflow(example=True)
@@ -394,7 +396,7 @@ def main(argv=None):
                 atomic(args.out / (model.__name__ + ".schema.json"), model.model_json_schema(by_alias=True))
             output = {"schemas": len(models), "result_path": str(args.out.resolve())}
         elif args.command == "demo":
-            output = demo(args.out, args.task)
+            output = demo(args.out, args.task, args.simulator)
         elif args.command == "web":
             from ..web.server import serve
             return serve(args.directory, args.simulator, args.provider, args.agent, args.port, not args.no_browser,

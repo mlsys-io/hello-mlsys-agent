@@ -1,4 +1,4 @@
-"""Run ledger integration for the simulator's public HTTP API only."""
+"""Run ledger integration for the simulator's public Agent API (HTTP or in-process)."""
 from copy import deepcopy
 import hashlib
 import json
@@ -7,7 +7,8 @@ from ..contracts.simulator import RunRequest
 from ..core.io import ROOT, TERMINAL, hashed, inside, require
 from ..core.locking import file_lock
 from ..core.store import Store
-from .simulator_http import SimulatorAPIError, SimulatorHTTPClient, SimulatorProtocolError, SimulatorTransportError
+from .simulator_http import (INPROCESS, SimulatorAPIError, SimulatorHTTPClient, SimulatorProtocolError,
+                             SimulatorTransportError, client_for)
 
 
 def request_bytes(root, spec, identifier, settings):
@@ -51,7 +52,8 @@ def execute(root, run, spec, settings):
     identifier = hashlib.sha256(str(root).encode()).hexdigest()[:16] + ":" + run["id"]
     raw = request_bytes(root, spec, identifier, settings)
     wire = {"simulator-request.json": raw}
-    provenance = {"source": "external simulator HTTP API", "endpoint": endpoint,
+    source = "in-tree simulator, in-process" if endpoint == INPROCESS else "external simulator HTTP API"
+    provenance = {"source": source, "endpoint": endpoint,
                   "model_aliases": settings["model_aliases"], "expected_version": settings["version"],
                   "input_sha256": "sha256:" + hashlib.sha256(raw).hexdigest()}
     lock = ROOT / "workspaces/.simulator-locks" / (hashlib.sha256(endpoint.encode()).hexdigest() + ".lock")
@@ -69,7 +71,7 @@ def execute(root, run, spec, settings):
         finally:
             store.close()
         try:
-            exchange = SimulatorHTTPClient(endpoint, timeout_s=spec["evaluation"]["timeout_s"] + 10).simulate(raw)
+            exchange = client_for(endpoint, spec["evaluation"]["timeout_s"] + 10).simulate(raw)
             wire["simulator-response.json"] = exchange["response_bytes"]
             result = exchange["result"]
             if result["backend"]["version"] != settings["version"]:

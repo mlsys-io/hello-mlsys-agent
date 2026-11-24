@@ -19,7 +19,9 @@ RUN pip install -e packages/simulator -e packages/lab \
  && useradd --create-home --uid 10001 mlab \
  && python -m mlab.jobs list
 
-USER mlab
+# No USER: job runners such as FlowMesh start the container as root to stage inputs and the output directory,
+# then drop to an unprivileged uid themselves (and replace the entrypoint). Standalone, prefer
+# `docker run --user mlab --network none ...`; the jobs need neither root nor a network.
 ENTRYPOINT ["python", "-m", "mlab.jobs"]
 CMD ["list"]
 

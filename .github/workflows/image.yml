@@ -29,8 +29,12 @@ jobs:
         run: docker build -t local/hello-mlsys-agent:ci .
       - name: Smoke test (no network)
         run: |
-          docker run --rm --network none local/hello-mlsys-agent:ci list
-          echo '{"task":"9.2"}' | docker run --rm -i --network none local/hello-mlsys-agent:ci sweep > sweep.json
+          docker run --rm --network none --user mlab local/hello-mlsys-agent:ci list
+          echo '{"task":"9.2"}' | docker run --rm -i --network none --user mlab local/hello-mlsys-agent:ci sweep > sweep.json
+          # A job runner starts the container as root and must be able to create its mounts.
+          docker run --rm --network none --entrypoint sh local/hello-mlsys-agent:ci -c 'test "$(id -u)" = 0 && mkdir -p /mnt/flowmesh/output'
+          # A runner also replaces the entrypoint, so plain python3 must import the jobs.
+          docker run --rm --network none --entrypoint python3 local/hello-mlsys-agent:ci -c 'import mlab.jobs, mlsys_sim'
           python3 -c "import json; d = json.load(open('sweep.json')); assert d['ok'] and d['reference']['best']['value'] > 0, d; print('sweep ok', d['reference']['best']['value'])"
       - name: Push
         if: startsWith(github.ref, 'refs/tags/v')

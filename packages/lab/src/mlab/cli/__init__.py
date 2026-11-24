@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from .. import __version__
 from ..contracts import Candidate, Capabilities, MeasurementPlan, Plan, RequestObservation, RunResult, RunSpec, TaskDefinition
 from ..core.io import ROOT, NOTICE, TERMINAL, LabError, atomic, claude_install, claude_logged_in, hashed, load, pinned_claude_version, require
+from ..backends.simulator_profiles import PROFILES
 from ..core.student import log_prompt
 from ..gateway import GatewayError
 from ..core.workspace import RUN_ID, Lab, find_workspace, initialize
@@ -19,6 +20,7 @@ MEASUREMENT_COMMANDS = {"measure", "align"}
 class JsonParser(argparse.ArgumentParser):
     def error(self, message):
         raise LabError("E_SCHEMA", message, 2)
+
 
 
 def parser():
@@ -35,7 +37,7 @@ def parser():
                       help="Slow flywheel backend: the stand-in, or a GPU sandbox over mlab.executor.v1 (--hardware-url)")
     init.add_argument("--hardware-url", help="Base URL of the GPU sandbox service (MLAB_HARDWARE_TOKEN for its bearer token)")
     init.add_argument("--provider", help="Student agent profile under agent/profiles (default: qwen3.8-27b)")
-    init.add_argument("--simulator-profile", choices=["protocol-v1.20"])
+    init.add_argument("--simulator-profile", choices=sorted(PROFILES))
     init.add_argument("--simulator-url")
     init.add_argument("--mode", choices=["guided", "open"], default="guided", help="open lets advanced students skip hypothesis-first")
     nxt = commands.add_parser("next")
@@ -100,7 +102,7 @@ def parser():
     web = commands.add_parser("web", help="Serve the course page: one agent per task, on 127.0.0.1")
     web.add_argument("directory", nargs="?", default="mlsys-course", help="Course directory; created if missing. Each session started on the page is a workspace in it")
     web.add_argument("--simulator", choices=["mlsys", "fixture", "llm"], default="mlsys")
-    web.add_argument("--simulator-profile", choices=["protocol-v1.20"])
+    web.add_argument("--simulator-profile", choices=sorted(PROFILES))
     web.add_argument("--simulator-url")
     web.add_argument("--provider", help="Student agent profile under agent/profiles (default: qwen3.8-27b)")
     web.add_argument("--agent", choices=["sdk", "fake"], default="sdk", help="sdk: Claude Code through the Agent SDK; fake: offline walkthrough")

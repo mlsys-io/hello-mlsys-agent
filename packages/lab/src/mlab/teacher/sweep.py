@@ -17,7 +17,7 @@ from pathlib import Path
 
 from mlab.backends.simulator_backend import request_bytes
 from mlab.backends.simulator_http import SimulatorInProcessClient
-from mlab.backends.simulator_profiles import PROFILE
+from mlab.backends.simulator_profiles import PROFILE, PROFILES
 from mlab.core.io import load
 from mlab.core.metrics import get_metric, verdict
 from mlab.core.store import now
@@ -54,10 +54,10 @@ def grid(task_id, baseline):
         yield variant(**dict(zip(axes, values)))
 
 
-def build(task_id):
+def build(task_id, profile=PROFILE):
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch) / "ws"
-        initialize(root, task_id, "mlsys", simulator_profile=PROFILE)
+        initialize(root, task_id, "mlsys", simulator_profile=profile)
         lab = Lab(root, readonly=True)
         settings = lab.config["simulator_service"]
         client = SimulatorInProcessClient()
@@ -80,7 +80,7 @@ def build(task_id):
     feasible = [r for r in rows if r.get("feasible") and type(r.get("value")) in {int, float}]
     feasible.sort(key=lambda r: r["value"], reverse=objective["direction"] == "max")
     import mlsys_sim
-    return {"schema": "mlab.v1", "task": task_id, "profile": PROFILE, "simulator_version": mlsys_sim.__version__,
+    return {"schema": "mlab.v1", "task": task_id, "profile": profile, "simulator_version": mlsys_sim.__version__,
             "objective": objective, "generated_at": now(), "grid_size": len(rows), "feasible": len(feasible),
             "best": feasible[0] if feasible else None, "top": feasible[:5],
             "note": "Best of a coarse grid on the development workload with seed 42; a student may beat it off-grid, "
@@ -90,11 +90,12 @@ def build(task_id):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--task", action="append", choices=["9.2", "9.3"], required=True)
+    parser.add_argument("--profile", default=PROFILE, choices=sorted(PROFILES))
     args = parser.parse_args(argv)
     OUT.mkdir(parents=True, exist_ok=True)
     for task_id in args.task:
-        reference = build(task_id)
-        path = OUT / f"{task_id}-{PROFILE}.json"
+        reference = build(task_id, args.profile)
+        path = OUT / f"{task_id}-{args.profile}.json"
         path.write_text(json.dumps(reference, ensure_ascii=False, indent=2) + "\n")
         best = reference["best"]
         print(f"{task_id}: {reference['feasible']}/{reference['grid_size']} feasible; best "

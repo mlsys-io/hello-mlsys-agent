@@ -1,0 +1,5 @@
+id: rtx5080_x1
+nodes:
+  - id: node0
+    devices:
+      - {id: gpu0, hardware: rtx5080}

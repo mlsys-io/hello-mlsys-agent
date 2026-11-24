@@ -1,0 +1,244 @@
+{
+  "schema": "mlab.v1",
+  "task": "9.2",
+  "profile": "protocol-v1.21",
+  "simulator_version": "1.24.0",
+  "objective": {
+    "direction": "max",
+    "metric": "goodput_tok_s"
+  },
+  "generated_at": "2026-11-24T15:25:51.376478+00:00",
+  "grid_size": 120,
+  "feasible": 5,
+  "best": {
+    "id": "ref_model-llm-0p6b_max_concurrency-4_chunked_prefill_tokens-none_continuous_batching-true",
+    "feasible": true,
+    "value": 22.4,
+    "strategy": {
+      "deployments": [
+        {
+          "model": "llm-0.6b",
+          "weight_precision": "BF16",
+          "kv_precision": "BF16",
+          "context_tokens": 16384,
+          "devices": [
+            "gpu0"
+          ],
+          "replicas": 1,
+          "parallel": {
+            "kind": "none",
+            "degree": 1
+          }
+        }
+      ],
+      "serving": {
+        "max_concurrency": 4,
+        "gpu_memory_utilization": 0.8,
+        "kv_fraction": null,
+        "kv_budget_gib": null,
+        "chunked_prefill_tokens": null,
+        "continuous_batching": true
+      },
+      "cache": {},
+      "scheduling": {},
+      "speculative": false
+    },
+    "constraints": {
+      "ttft_ms.p99": 1398.4701147941746,
+      "completion_rate": 1.0
+    }
+  },
+  "top": [
+    {
+      "id": "ref_model-llm-0p6b_max_concurrency-4_chunked_prefill_tokens-none_continuous_batching-true",
+      "feasible": true,
+      "value": 22.4,
+      "strategy": {
+        "deployments": [
+          {
+            "model": "llm-0.6b",
+            "weight_precision": "BF16",
+            "kv_precision": "BF16",
+            "context_tokens": 16384,
+            "devices": [
+              "gpu0"
+            ],
+            "replicas": 1,
+            "parallel": {
+              "kind": "none",
+              "degree": 1
+            }
+          }
+        ],
+        "serving": {
+          "max_concurrency": 4,
+          "gpu_memory_utilization": 0.8,
+          "kv_fraction": null,
+          "kv_budget_gib": null,
+          "chunked_prefill_tokens": null,
+          "continuous_batching": true
+        },
+        "cache": {},
+        "scheduling": {},
+        "speculative": false
+      },
+      "constraints": {
+        "ttft_ms.p99": 1398.4701147941746,
+        "completion_rate": 1.0
+      }
+    },
+    {
+      "id": "ref_model-llm-0p6b_max_concurrency-8_chunked_prefill_tokens-none_continuous_batching-true",
+      "feasible": true,
+      "value": 22.4,
+      "strategy": {
+        "deployments": [
+          {
+            "model": "llm-0.6b",
+            "weight_precision": "BF16",
+            "kv_precision": "BF16",
+            "context_tokens": 16384,
+            "devices": [
+              "gpu0"
+            ],
+            "replicas": 1,
+            "parallel": {
+              "kind": "none",
+              "degree": 1
+            }
+          }
+        ],
+        "serving": {
+          "max_concurrency": 8,
+          "gpu_memory_utilization": 0.8,
+          "kv_fraction": null,
+          "kv_budget_gib": null,
+          "chunked_prefill_tokens": null,
+          "continuous_batching": true
+        },
+        "cache": {},
+        "scheduling": {},
+        "speculative": false
+      },
+      "constraints": {
+        "ttft_ms.p99": 560.1055518147069,
+        "completion_rate": 1.0
+      }
+    },
+    {
+      "id": "ref_model-llm-0p6b_max_concurrency-12_chunked_prefill_tokens-none_continuous_batching-true",
+      "feasible": true,
+      "value": 22.4,
+      "strategy": {
+        "deployments": [
+          {
+            "model": "llm-0.6b",
+            "weight_precision": "BF16",
+            "kv_precision": "BF16",
+            "context_tokens": 16384,
+            "devices": [
+              "gpu0"
+            ],
+            "replicas": 1,
+            "parallel": {
+              "kind": "none",
+              "degree": 1
+            }
+          }
+        ],
+        "serving": {
+          "max_concurrency": 12,
+          "gpu_memory_utilization": 0.8,
+          "kv_fraction": null,
+          "kv_budget_gib": null,
+          "chunked_prefill_tokens": null,
+          "continuous_batching": true
+        },
+        "cache": {},
+        "scheduling": {},
+        "speculative": false
+      },
+      "constraints": {
+        "ttft_ms.p99": 560.1055518147069,
+        "completion_rate": 1.0
+      }
+    },
+    {
+      "id": "ref_model-llm-1p7b_max_concurrency-8_chunked_prefill_tokens-none_continuous_batching-true",
+      "feasible": true,
+      "value": 22.4,
+      "strategy": {
+        "deployments": [
+          {
+            "model": "llm-1.7b",
+            "weight_precision": "BF16",
+            "kv_precision": "BF16",
+            "context_tokens": 16384,
+            "devices": [
+              "gpu0"
+            ],
+            "replicas": 1,
+            "parallel": {
+              "kind": "none",
+              "degree": 1
+            }
+          }
+        ],
+        "serving": {
+          "max_concurrency": 8,
+          "gpu_memory_utilization": 0.8,
+          "kv_fraction": null,
+          "kv_budget_gib": null,
+          "chunked_prefill_tokens": null,
+          "continuous_batching": true
+        },
+        "cache": {},
+        "scheduling": {},
+        "speculative": false
+      },
+      "constraints": {
+        "ttft_ms.p99": 1374.1900011899927,
+        "completion_rate": 1.0
+      }
+    },
+    {
+      "id": "ref_model-llm-1p7b_max_concurrency-12_chunked_prefill_tokens-none_continuous_batching-true",
+      "feasible": true,
+      "value": 22.4,
+      "strategy": {
+        "deployments": [
+          {
+            "model": "llm-1.7b",
+            "weight_precision": "BF16",
+            "kv_precision": "BF16",
+            "context_tokens": 16384,
+            "devices": [
+              "gpu0"
+            ],
+            "replicas": 1,
+            "parallel": {
+              "kind": "none",
+              "degree": 1
+            }
+          }
+        ],
+        "serving": {
+          "max_concurrency": 12,
+          "gpu_memory_utilization": 0.8,
+          "kv_fraction": null,
+          "kv_budget_gib": null,
+          "chunked_prefill_tokens": null,
+          "continuous_batching": true
+        },
+        "cache": {},
+        "scheduling": {},
+        "speculative": false
+      },
+      "constraints": {
+        "ttft_ms.p99": 1158.4322293052933,
+        "completion_rate": 1.0
+      }
+    }
+  ],
+  "note": "Best of a coarse grid on the development workload with seed 42; a student may beat it off-grid, so scores cap at 1.0 of this value."
+}

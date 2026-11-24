@@ -21,6 +21,9 @@ Jobs
              performance constraints, since the exercise profile does not evaluate model quality.
   measure    reserved for GPU sandbox measurements (mlab.executor.v1); not implemented yet
 
+`templates`, `evaluate` and `sweep` take an optional "profile": the exercise profile, one per target GPU.
+  protocol-v1.20  RX 9070 XT (the default; unchanged)        protocol-v1.21  RTX 5080 (16 GB, 960 GB/s, 112.6 dense BF16 TFLOPS)
+
 Errors exit with status 2 and print {"schema", "ok": false, "error": {"code", "message"}}.
 """
 import argparse
@@ -68,14 +71,12 @@ def simulate(payload):
 
 
 def sweep(payload):
-    from .backends.simulator_profiles import PROFILE
     task = payload.get("task")
     if task not in {"9.2", "9.3"}:
         raise JobError("E_SCHEMA", "sweep needs 'task': '9.2' or '9.3' (9.1 is a satisfy task)")
-    if payload.get("profile", PROFILE) != PROFILE:
-        raise JobError("E_SCHEMA", f"only the {PROFILE} exercise profile is supported")
+    profile = _profile(payload)
     from .teacher.sweep import build
-    return {"reference": build(task)}
+    return {"reference": build(task, profile)}
 
 
 def calibrate(payload):
@@ -111,8 +112,17 @@ MAX_EVALUATIONS = 48
 TASK_IDS = ("9.1", "9.2", "9.3")
 
 
+def _profile(payload):
+    """The exercise profile a job runs on: the default unless the payload names another published one."""
+    from .backends.simulator_profiles import PROFILE, PROFILES
+    profile = payload.get("profile", PROFILE)
+    if profile not in PROFILES:
+        raise JobError("E_SCHEMA", f"unknown profile {profile!r}; use one of {', '.join(sorted(PROFILES))}")
+    return profile
+
+
 @contextlib.contextmanager
-def _exercise(task):
+def _exercise(task, profile=None):
     """A throwaway workspace for `task` on the in-tree simulator's exercise profile."""
     from .backends.simulator_profiles import PROFILE
     from .core.workspace import Lab, initialize
@@ -120,7 +130,7 @@ def _exercise(task):
         raise JobError("E_SCHEMA", f"'task' must be one of {', '.join(TASK_IDS)}")
     scratch = Path(tempfile.mkdtemp(prefix="mlab-job-"))
     try:
-        initialize(scratch / "ws", task, "mlsys", simulator_profile=PROFILE)
+        initialize(scratch / "ws", task, "mlsys", simulator_profile=profile or PROFILE)
         lab = Lab(scratch / "ws", readonly=True)
         try:
             yield lab
@@ -144,7 +154,7 @@ def _flat_metrics(metrics):
 
 def templates(payload):
     from .core.io import load
-    with _exercise(payload.get("task")) as lab:
+    with _exercise(payload.get("task"), _profile(payload)) as lab:
         task = lab.task
         root = lab.root / "task"
         designs = [load(root / "baselines/baseline.yaml")]
@@ -176,7 +186,7 @@ def evaluate(payload):
         raise JobError("E_BUDGET", f"at most {MAX_EVALUATIONS} candidate x seed x workload evaluations per job")
     client = SimulatorInProcessClient()
     results = []
-    with _exercise(payload.get("task")) as lab:
+    with _exercise(payload.get("task"), _profile(payload)) as lab:
         unknown = sorted(set(workloads) - {"development", *lab.task["holdouts"]})
         if unknown:
             raise JobError("E_SCHEMA", f"unknown workloads {unknown}; use development or {lab.task['holdouts']}")

@@ -1,0 +1,6 @@
+id: rtx5080
+name: NVIDIA GeForce RTX 5080
+vram_gib: 16
+vram_source: NVIDIA RTX Blackwell GPU Architecture whitepaper v1.1, Table 4 (16 GB GDDR7); GB treated as GiB, as for the 9070 XT
+peak_compute: null
+memory_bandwidth: null

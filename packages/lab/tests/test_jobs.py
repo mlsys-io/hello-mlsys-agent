@@ -151,3 +151,71 @@ def test_evaluate_refuses_bad_requests(payload, code):
     with pytest.raises(JobError) as error:
         run("evaluate", json.dumps(payload))
     assert error.value.code == code
+
+
+# --- exercise profiles: one per target GPU -------------------------------------------------------------------
+
+V120, V121 = "protocol-v1.20", "protocol-v1.21"
+
+
+def evaluate_baseline(task, profile=None):
+    payload = {"task": task} | ({"profile": profile} if profile else {})
+    template = json.loads(run("templates", json.dumps(payload)))
+    out = json.loads(run("evaluate", json.dumps(payload | {"candidates": [template["templates"][0]],
+                                                           "seeds": [42], "workloads": ["development"]})))
+    return template, out["results"][0]
+
+
+def test_default_profile_is_unchanged_and_names_its_hardware():
+    template, result = evaluate_baseline("9.2")
+    assert template["profile"]["id"] == V120 and template["templates"][0]["infra"] == "rx9070xt_x1"
+    assert result["metrics"]["goodput_tok_s"] == 22.4 and round(result["metrics"]["ttft_ms.p99"], 1) == 709.7
+    explicit = evaluate_baseline("9.2", V120)[1]
+    assert explicit["metrics"] == result["metrics"]  # naming the default changes nothing
+
+
+def test_rtx5080_profile_uses_its_own_hardware_and_rates():
+    template, result = evaluate_baseline("9.2", V121)
+    assert template["profile"]["id"] == V121 and "RTX 5080" in template["profile"]["notice"]
+    assert {t["infra"] for t in template["templates"]} == {"rtx5080_x1"}
+    assert template["task"]["infra_options"] == ["rtx5080_x1"]
+    amd = evaluate_baseline("9.2", V120)[1]["metrics"]
+    # 960 GB/s vs 640: decode is bandwidth-bound and faster. 112.6 vs 195 TFLOPS: prefill is compute-bound and slower.
+    assert result["metrics"]["decode_tok_s"] > amd["decode_tok_s"] * 1.3
+    assert result["metrics"]["ttft_ms.p99"] > amd["ttft_ms.p99"] * 1.4
+
+
+@pytest.mark.parametrize("task, infra", [("9.1", "rtx5080_x1"), ("9.3", "rtx5080_x4")])
+def test_rtx5080_profile_covers_every_task(task, infra):
+    template, result = evaluate_baseline(task, V121)
+    assert {t["infra"] for t in template["templates"]} == {infra}
+    assert result["status"] == "succeeded"
+
+
+def test_unknown_profile_is_refused_before_any_work():
+    for job in ("templates", "evaluate", "sweep"):
+        with pytest.raises(JobError, match="unknown profile"):
+            run(job, json.dumps({"task": "9.2", "profile": "protocol-v9", "candidates": [{}]}))
+
+
+def test_a_v121_design_cannot_name_the_other_card():
+    template = json.loads(run("templates", json.dumps({"task": "9.2", "profile": V121})))
+    design = copy.deepcopy(template["templates"][0])
+    design["infra"] = "rx9070xt_x1"
+    out = json.loads(run("evaluate", json.dumps({"task": "9.2", "profile": V121, "candidates": [design],
+                                                 "seeds": [42], "workloads": ["development"]})))
+    assert out["results"][0]["status"] == "rejected"
+
+
+def test_each_profile_ships_its_own_reference_optimum():
+    for task in ("9.2", "9.3"):
+        shipped = json.loads((ROOT / f"src/mlab/teacher/reference/{task}-{V121}.json").read_text())
+        assert shipped["profile"] == V121 and shipped["best"]["feasible"] is True
+        assert shipped["best"]["value"] != json.loads(
+            (ROOT / f"src/mlab/teacher/reference/{task}-{V120}.json").read_text())["best"]["value"] or task == "9.2"
+
+
+def test_sweep_reproduces_the_rtx5080_reference():
+    reference = json.loads(run("sweep", json.dumps({"task": "9.3", "profile": V121})))["reference"]
+    shipped = json.loads((ROOT / f"src/mlab/teacher/reference/9.3-{V121}.json").read_text())
+    assert reference["best"]["value"] == shipped["best"]["value"] and reference["profile"] == V121

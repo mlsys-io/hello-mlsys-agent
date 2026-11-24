@@ -32,8 +32,10 @@ def request_bytes(root, spec, identifier, settings):
         deployment["model"] = model(deployment["model"])
         require(deployment["weight_precision"] == deployment["kv_precision"] == "BF16", "E_OUT_OF_SPACE",
                 "The pinned simulator catalog supports BF16 weights and KV only")
-    require(all(device["hardware"] == "rx9070xt" for node in spec["infra"]["nodes"] for device in node["devices"]),
-            "E_OUT_OF_SPACE", "The pinned simulator catalog supports RX9070XT only")
+    from .simulator_profiles import PROFILES
+    supported = {profile["hardware"] for profile in PROFILES.values()}
+    require(all(device["hardware"] in supported for node in spec["infra"]["nodes"] for device in node["devices"]),
+            "E_OUT_OF_SPACE", "The pinned simulator catalog supports " + ", ".join(sorted(supported)) + " only")
     execution = {key: spec["execution"][key] for key in ("seed", "repeat", "split", "holdout", "initial_state", "warmup")}
     execution["max_simulated_ms"] = spec["evaluation"]["duration_s"] * 1000
     payload = {"schema": "mlab.simulator.v1", "client_request_id": identifier, "catalog_version": settings["catalog_version"],

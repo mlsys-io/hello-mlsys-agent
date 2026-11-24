@@ -65,7 +65,7 @@ runner execute the same code:
 | Job | Input | Output |
 | --- | --- | --- |
 | `simulate` | `{"requests": [<mlab.simulator.v1 request text>, ...]}` | each response exactly as `POST /v1/simulate` returns it |
-| `templates` | `{"task": "9.2"}` | the exercise's objective, constraints, decision space, holdouts and template designs |
+| `templates` | `{"task": "9.2", "profile": "protocol-v1.21"}` | the exercise's objective, constraints, decision space, holdouts and template designs |
 | `evaluate` | `{"task", "candidates": [...], "seeds", "workloads"}` | per design, seed and workload: metrics, constraint verdicts and the objective; out-of-space designs are rejected with the reason |
 | `sweep` | `{"task": "9.2"}` | the reference optimum for the exercise profile |
 | `calibrate` | train and holdout datasets, the current Profile, a version | the gate's decision and the fitted Profile |
@@ -75,6 +75,8 @@ runner execute the same code:
 python -m mlab.jobs simulate < payload.json                                   # in the workspace
 docker run --rm -i --user mlab --network none ghcr.io/mlsys-io/hello-mlsys-agent:<tag> simulate < payload.json
 ```
+
+`profile` (optional on `templates`, `evaluate`, `sweep`) picks the target GPU: `protocol-v1.20` RX 9070 XT (default), `protocol-v1.21` RTX 5080.
 
 Tags `vX.Y.Z` publish the image to GHCR (`.github/workflows/image.yml`); deployments pin its digest. A job
 runner can also import `mlab.jobs.run(name, payload_text)` inside the image. Teacher prompts

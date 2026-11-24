@@ -1,0 +1,70 @@
+schema: mlab.v1
+task: '9.2'
+about: 'Single-node serving under an SLA: goodput subject to TTFT p99 and completion-rate constraints.'
+note: Graded by the teacher agent (judged) and by mlab from run artifacts (deterministic). Scores are 0-4; the total
+  is out of 100.
+criteria:
+- id: framing
+  title: Problem framing and hypothesis
+  kind: judged
+  weight: 20
+  description: States a falsifiable hypothesis about a mechanism (memory, batching, prefill, parallelism, queueing),
+    an alternative explanation, and what result would refute it; derives requirements from the task's constraints.
+  levels:
+    0: No hypothesis, or one that cannot be refuted.
+    2: A plausible hypothesis, but vague about mechanism or what would refute it.
+    4: A mechanism-level, falsifiable hypothesis with an alternative and an explicit refutation condition tied to
+      the constraints.
+- id: analysis
+  title: Analysis of evidence
+  kind: judged
+  weight: 25
+  description: 'Reads the simulator output correctly: cites run ids, distinguishes status, verdict and evidence
+    level, separates observation from explanation, and does not overclaim from uncalibrated simulation or a small
+    trace.'
+  levels:
+    0: Claims not supported by the cited runs, or misread metrics.
+    2: Mostly correct readings, some overclaiming or missing citations.
+    4: Every claim traced to runs; limits of the evidence stated; hypothesis judged supported, refuted or unclear
+      for stated reasons.
+- id: dispatch
+  title: Experiment dispatch
+  kind: judged
+  weight: 20
+  description: 'Chooses experiments that discriminate between hypotheses: controlled variations, sensible sweeps,
+    validation (repeat, holdout) before concluding, and hardware points spent where the simulator is least certain.'
+  levels:
+    0: Unfocused runs, or many variables changed at once.
+    2: Reasonable experiments with some wasted or confounded runs.
+    4: Each round isolates a question; budget spent deliberately; validation done before the conclusion.
+- id: decision
+  title: Decision and conclusion
+  kind: judged
+  weight: 15
+  description: The selected configuration follows from the evidence and the trade-offs (e.g. latency vs goodput,
+    memory headroom) are acknowledged; the conclusion's evidence level is understood.
+  levels:
+    0: Selection contradicts the evidence.
+    2: Defensible selection with thin justification.
+    4: Selection justified against alternatives, trade-offs and remaining risk stated.
+- id: evidence_level
+  title: Strength of the conclusion's evidence
+  kind: deterministic
+  weight: 10
+  description: 'From mlab conclude: validated on the simulator (development, repeat and every holdout) or on hardware.
+    Exercise profiles do not evaluate model quality, so a selection whose development, repeat and every holdout
+    run meet the performance constraints earns performance_validated even when the conclusion stays unresolved for
+    that reason; a hardware conflict does not.'
+  scores:
+    unresolved: 0
+    mock_only: 2
+    simulation_validated: 4
+    hardware_validated: 4
+  performance_validated: 3
+- id: objective
+  title: Objective reached
+  kind: deterministic
+  weight: 10
+  description: 'Satisfy tasks: 4 if the selected configuration meets every performance constraint in development
+    runs. Optimization tasks: its objective as a fraction of the reference optimum for this task and simulator profile
+    (or of the best feasible configuration the student simulated when no reference ships). 0 if it misses the constraints.'

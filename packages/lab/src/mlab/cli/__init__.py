@@ -58,6 +58,11 @@ def parser():
     measure.add_argument("--max", type=float, default=60)
     align = commands.add_parser("align", help="The simulator's frozen predictions next to the hardware results; writes nothing")
     align.add_argument("measurement", nargs="?", help="e.g. m001; the current measurement when omitted")
+    ask = commands.add_parser("ask", help="Ask the teacher a question; it coaches and never hands over a configuration")
+    ask.add_argument("question", nargs="+")
+    assess = commands.add_parser("assess", help="Have the teacher grade the latest conclusion against the task rubric")
+    assess.add_argument("--export", nargs="+", type=Path, metavar="WORKSPACE",
+                        help="Instructor export: print the latest assessment of each workspace as JSON lines")
     conclude = commands.add_parser("conclude", help="Submit the task's conclusion for the selected configuration")
     conclude.add_argument("--candidate", help="A configuration other than the current selection, e.g. r002/c16")
     show = commands.add_parser("run")
@@ -168,6 +173,19 @@ def doctor(web=False, agent="sdk", provider=None, live=False, workspace=None):
     elif login is False and not ready and report["agent"].get("protocol") == "login":
         report["next_actions"] = [{"actor": "student", "do": "fix", "say": "Log in once: run ./claude in a workspace, or claude from an activated environment."}]
     return report
+
+
+def auto_assess(root):
+    """Grade a new conclusion when a teacher is reachable; a teacher failure never undoes the conclusion."""
+    import os
+    from ..teacher.client import configuration
+    if not (os.environ.get("MLAB_TEACHER_URL") or configuration()):
+        return {"status": "skipped", "say": "No teacher configured; run mlab assess once MLAB_TEACHER_* is set."}
+    from ..teacher.relay import teacher
+    try:
+        return {"status": "graded", **teacher(root, "/assess", {})}
+    except LabError as error:
+        return {"status": "failed", "error": str(error), "say": "The conclusion is saved; run mlab assess to retry."}
 
 
 def finish(lab, wait, label):
@@ -293,7 +311,10 @@ def run_command(args, lab):
     if args.command == "align":
         return lab.align(args.measurement)
     if args.command == "conclude":
-        return lab.conclude(args.candidate)
+        output = lab.conclude(args.candidate)
+        lab.store.commit()
+        output["assessment"] = auto_assess(lab.root)
+        return output
     if args.command == "validate":
         return lab.submit(args.split, args.candidate)
     if args.command == "compare":
@@ -415,6 +436,16 @@ def main(argv=None):
             from ..web.server import serve
             return serve(args.directory, args.simulator, args.provider, args.agent, args.port, not args.no_browser,
                          not args.no_opening, args.auto_continue, args.simulator_profile, args.simulator_url)
+        elif args.command in {"ask", "assess"} and not getattr(args, "export", None):
+            from ..teacher.relay import teacher
+            root = find_workspace(args.workspace)
+            output = teacher(root, "/ask" if args.command == "ask" else "/assess",
+                             {"question": " ".join(args.question)} if args.command == "ask" else {})
+        elif args.command == "assess":
+            from ..teacher.assess import export
+            for row in export([path.resolve() for path in args.export]):
+                print(json.dumps(row, ensure_ascii=False))
+            return 0
         elif args.command == "generate-workload":
             from ..core.workspace import TASKS
             from ..core.workloads import generate, write_workload

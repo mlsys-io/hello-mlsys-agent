@@ -40,6 +40,21 @@ def agent_environment(profile, url, token, model=None, base=None):
     return env
 
 
+def start_teacher(root, env):
+    """With MLAB_TEACHER_* in this process, serve the teacher on loopback and give the agent only its URL and token."""
+    import secrets
+    from .teacher.client import TeacherClient, configuration
+    from .teacher.relay import serve
+    config = configuration()
+    if config is None:
+        return None
+    token = secrets.token_urlsafe(24)
+    relay = serve(root, TeacherClient(config), token)
+    env.update({"MLAB_TEACHER_URL": f"http://127.0.0.1:{relay.server_port}", "MLAB_TEACHER_TOKEN": token})
+    print(f"mlab: teacher {config['model']} available to `mlab ask` and `mlab assess`.", file=sys.stderr)
+    return relay
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="mlab.launch", description=__doc__.splitlines()[0])
     parser.add_argument("--workspace", type=Path, required=True)
@@ -55,6 +70,7 @@ def main(argv=None):
         print(f"mlab: {error}", file=sys.stderr)
         return error.exit_code
     env = agent_environment(profile, url, token, resolved.get("model"))
+    relay = start_teacher(root, env)
     if server:
         print(f"mlab: {profile['id']} -> {resolved['model']} via the local gateway; the provider key stays in this process.",
               file=sys.stderr)
@@ -68,9 +84,10 @@ def main(argv=None):
             except KeyboardInterrupt:
                 continue
     finally:
-        if server:
-            server.shutdown()
-            server.server_close()
+        for running in (server, relay):
+            if running:
+                running.shutdown()
+                running.server_close()
 
 
 if __name__ == "__main__":

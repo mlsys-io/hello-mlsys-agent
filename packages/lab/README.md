@@ -59,6 +59,31 @@ Other profiles in `agent/profiles/`: `qwen3.8-27b-anthropic` (a host that serves
 with `mlab init --provider NAME`. Students may also bring another agent: the workspace contract is `AGENTS.md`
 plus the `mlab` CLI.
 
+### The teacher
+
+The teacher is a second model that coaches and grades; the reference is **DeepSeek V4.1 Flash** on any
+OpenAI-compatible endpoint:
+
+```bash
+export MLAB_TEACHER_BASE_URL=https://...   # OpenAI-compatible, ends in /v1
+export MLAB_TEACHER_MODEL=deepseek-v4.1-flash   # the provider's id for it
+export MLAB_TEACHER_API_KEY=...
+```
+
+- `mlab ask "QUESTION"` coaches: it explains mechanisms, cites the student's own runs and ends with a guiding
+  question. It never names a value for a decision variable; a draft that does is rewritten once, then redacted.
+  The agent may relay a question only when the student asks (`Bash(mlab ask*)` is an *ask* rule), questions are
+  budgeted (`MLAB_TEACHER_QUESTIONS`, default 20) and logged to `.mlab/teacher.jsonl`. The teacher never sees
+  holdout workloads, and sees holdout results only after a conclusion.
+- `mlab assess` (also run by `mlab conclude` when a teacher is configured) grades against `task/rubric.yaml`
+  and writes `assessments/NNN.json` and `.md`. Judged criteria (framing, analysis, dispatch, decision) come
+  from the teacher with mandatory citations; citations to records that do not exist are dropped. Deterministic
+  criteria come from mlab: the conclusion's evidence level and the objective against a reference optimum that
+  ships inside mlab (`scripts/teacher/build_reference.py`), never in the workspace. The agent cannot edit
+  `assessments/`. `mlab assess --export WS...` prints the latest assessment of each workspace for instructors.
+- Under `./claude` the launcher holds `MLAB_TEACHER_*` and serves the teacher on loopback; the student's agent
+  gets only `MLAB_TEACHER_URL` and a session token.
+
 ## Talking to the agent
 
 ```bash

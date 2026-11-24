@@ -129,11 +129,22 @@ student; never record them as the student's words.
 - Never write the student's hypothesis, comments, point choices or decisions yourself.
 - Equal goodput does not mean equal latency. The student selects the candidate.
 
+## The teacher
+
+The lab has a teacher (another model) that coaches the student and grades the finished task.
+- `mlab ask "QUESTION"` is the student's line to the teacher. Run it only when the student asks you to ask the
+  teacher, and pass their question as they wrote it. Never consult the teacher on your own initiative or to get
+  a configuration; it will not give one. Show the answer and its follow-up question unchanged.
+- `mlab conclude` also asks the teacher for an assessment when one is configured; `mlab assess` grades the
+  latest conclusion again. Show the total and per-criterion scores; never edit assessments/.
+- The rubric is in task/rubric.yaml. Grades reward the student's own framing, analysis, experiment choices and
+  decision, so keep their words theirs.
+
 ## Files and errors
 
 - Paths in mlab output are relative to the workspace root.
 - Editable: hypothesis.md, review.md, plan.yaml, candidates/*.yaml, analysis.md, decision.md, points.yaml
-  and analysis/. Never edit task/, runs/, state.yaml, approvals, frozen files, conclusions/ or .mlab/.
+  and analysis/. Never edit task/, runs/, state.yaml, approvals, frozen files, conclusions/, assessments/ or .mlab/.
 - E_SCHEMA / E_INCOMPARABLE: fix the reported field without changing intent, at most twice. When next_actions
   says to ask the student, ask.
 - E_MECHANISM_UNSUPPORTED / E_OUT_OF_SPACE / E_OUT_OF_CALIBRATION / E_FROZEN_CHANGED: stop and explain to the

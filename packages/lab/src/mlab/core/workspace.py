@@ -352,58 +352,64 @@ class Lab:
                 {"actor": "agent", "do": "ask", "say": "Ask the student and record their own words in hypothesis.md. Never write the hypothesis or the falsification condition yourself."},
                 {"actor": "student", "do": "hypothesis", "say": "State the hypothesis and what result would show it wrong."}])
         require(len(plan["candidates"]) >= (1 if w.get("exploratory") else self.task["min_candidates"]), "E_SCHEMA", "too few candidates", 2)
-        catalog = load(self.root / "task/catalog.json")
         candidates = []
         seen = set()
         for relative in plan["candidates"]:
-            candidate = dump(Candidate.model_validate(load(inside(folder, relative))))
+            candidate = self.validate_candidate(load(inside(folder, relative)), plan["seeds"][0])
             require(candidate["id"] not in seen, "E_SCHEMA", "duplicate candidate IDs", 2)
             seen.add(candidate["id"])
-            require(candidate["infra"] in self.task["infra_options"], "E_OUT_OF_SPACE", "infra not in task decision space")
-            strategy = candidate["strategy"]
-            from ..backends.local import LocalBackend
-            from ..backends.capabilities import check_capabilities
-            check_capabilities(LocalBackend(self.root, self.simulator).capabilities(self.task), strategy, self.task["workload_mode"])
-            for path, rule in self.task["decision_space"].items():
-                if path == "speculative" and not strategy["speculative"]:
-                    continue
-                head, *tail = path.split(".")
-                objects = strategy[head] if head == "deployments" else [strategy.get(head, {})]
-                for obj in objects:
-                    value = obj
-                    for key in tail:
-                        value = value.get(key) if isinstance(value, dict) else None
-                    if value is None:
-                        continue
-                    valid = (value in rule["values"] and any(type(value) is type(v) and value == v for v in rule["values"])) if rule["type"] == "enum" else type(value) in {int, float} and rule["min"] <= value <= rule["max"]
-                    require(valid, "E_OUT_OF_SPACE", f"{path}={value} outside decision space", field=path)
-            # Reject nondefault parameters even if their field exists in another task's schema.
-            explicit = load(inside(folder, relative))["strategy"]
-            def leaves(obj, prefix=""):
-                if isinstance(obj, list):
-                    return [item for element in obj for item in leaves(element, prefix)]
-                if isinstance(obj, dict):
-                    return [item for key, value in obj.items() for item in leaves(value, prefix + "." + key if prefix else key)]
-                return [prefix]
-            permitted = set(self.task["decision_space"]) | {"deployments.devices"}
-            for leaf in leaves(explicit):
-                require(leaf in permitted, "E_OUT_OF_SPACE", f"{leaf} is not configurable in this task")
-            infra = catalog["infra"][candidate["infra"]]
-            devices = {d["id"] for n in infra["nodes"] for d in n["devices"]}
-            for deployment in strategy["deployments"]:
-                require(set(deployment["devices"]) <= devices, "E_OUT_OF_SPACE", "unknown device")
-                require(len(set(deployment["devices"])) == len(deployment["devices"]), "E_SCHEMA", "duplicate device placement", 2)
-                degree = deployment["parallel"]["degree"]
-                require((deployment["parallel"]["kind"] != "none" or degree == 1) and len(deployment["devices"]) == degree * deployment["replicas"], "E_SCHEMA", "placement must match parallel degree times replicas", 2)
-            if self.simulator == "mlsys":
-                from ..backends.simulator_backend import request_bytes
-                request_bytes(self.root, self.make_spec(candidate, plan["seeds"][0], 0, "development"),
-                              "preflight", self.config["simulator_service"])
             candidates.append(candidate)
         count = len(candidates) * len(plan["seeds"])
         require(count <= self.task["budget"]["simulator"]["runs_per_batch"], "E_BUDGET", "plan exceeds the simulator's per-batch limit")
         digest = hashed({"plan": plan, "candidates": candidates, "hypothesis": hashed(hypothesis), "task": hashed(self.task)})
         return plan, candidates, digest
+
+    def validate_candidate(self, raw, seed=42):
+        """One candidate checked against the task's schema, decision space and placement rules (and, on the
+        simulator, a preflight of its request); returns the normalized candidate. Shared by plans and jobs."""
+        candidate = dump(Candidate.model_validate(raw))
+        catalog = load(self.root / "task/catalog.json")
+        require(candidate["infra"] in self.task["infra_options"], "E_OUT_OF_SPACE", "infra not in task decision space")
+        strategy = candidate["strategy"]
+        from ..backends.local import LocalBackend
+        from ..backends.capabilities import check_capabilities
+        check_capabilities(LocalBackend(self.root, self.simulator).capabilities(self.task), strategy, self.task["workload_mode"])
+        for path, rule in self.task["decision_space"].items():
+            if path == "speculative" and not strategy["speculative"]:
+                continue
+            head, *tail = path.split(".")
+            objects = strategy[head] if head == "deployments" else [strategy.get(head, {})]
+            for obj in objects:
+                value = obj
+                for key in tail:
+                    value = value.get(key) if isinstance(value, dict) else None
+                if value is None:
+                    continue
+                valid = (value in rule["values"] and any(type(value) is type(v) and value == v for v in rule["values"])) if rule["type"] == "enum" else type(value) in {int, float} and rule["min"] <= value <= rule["max"]
+                require(valid, "E_OUT_OF_SPACE", f"{path}={value} outside decision space", field=path)
+        # Reject nondefault parameters even if their field exists in another task's schema.
+        explicit = raw["strategy"]
+        def leaves(obj, prefix=""):
+            if isinstance(obj, list):
+                return [item for element in obj for item in leaves(element, prefix)]
+            if isinstance(obj, dict):
+                return [item for key, value in obj.items() for item in leaves(value, prefix + "." + key if prefix else key)]
+            return [prefix]
+        permitted = set(self.task["decision_space"]) | {"deployments.devices"}
+        for leaf in leaves(explicit):
+            require(leaf in permitted, "E_OUT_OF_SPACE", f"{leaf} is not configurable in this task")
+        infra = catalog["infra"][candidate["infra"]]
+        devices = {d["id"] for n in infra["nodes"] for d in n["devices"]}
+        for deployment in strategy["deployments"]:
+            require(set(deployment["devices"]) <= devices, "E_OUT_OF_SPACE", "unknown device")
+            require(len(set(deployment["devices"])) == len(deployment["devices"]), "E_SCHEMA", "duplicate device placement", 2)
+            degree = deployment["parallel"]["degree"]
+            require((deployment["parallel"]["kind"] != "none" or degree == 1) and len(deployment["devices"]) == degree * deployment["replicas"], "E_SCHEMA", "placement must match parallel degree times replicas", 2)
+        if self.simulator == "mlsys":
+            from ..backends.simulator_backend import request_bytes
+            request_bytes(self.root, self.make_spec(candidate, seed, 0, "development"),
+                          "preflight", self.config["simulator_service"])
+        return candidate
 
     def check(self):
         plan, candidates, digest = self.specifications()

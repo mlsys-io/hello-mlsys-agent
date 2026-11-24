@@ -13,12 +13,20 @@ Jobs
   calibrate  {"train": <dataset>, "holdout": <dataset>, "current_profile": <profile> | null, "version": "vN",
               "budgets": {...} | null, "allow_test_fixture": false}
              ->  {"decision": {...}, "profile": <fitted candidate Profile>}   (gate in scripts/calibration/loop.py)
+  templates  {"task": "9.1" | "9.2" | "9.3"}  ->  the exercise's objective, constraints, decision space, holdouts and
+             template designs (baseline and examples) for the simulator profile
+  evaluate   {"task", "candidates": [<lab Candidate>...], "seeds": [42], "workloads": ["development", <holdout>...]}
+             ->  {"results": [{candidate_id, seed, workload, status, meets_constraints, metrics, constraints, objective}]}
+             Each candidate is checked against the task first (rejected ones get "error"); constraints are the task's
+             performance constraints, since the exercise profile does not evaluate model quality.
   measure    reserved for GPU sandbox measurements (mlab.executor.v1); not implemented yet
 
 Errors exit with status 2 and print {"schema", "ok": false, "error": {"code", "message"}}.
 """
 import argparse
+import contextlib
 import json
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -99,11 +107,120 @@ def calibrate(payload):
         return {"decision": decision, "profile": json.loads(fitted.read_text())}
 
 
+MAX_EVALUATIONS = 48
+TASK_IDS = ("9.1", "9.2", "9.3")
+
+
+@contextlib.contextmanager
+def _exercise(task):
+    """A throwaway workspace for `task` on the in-tree simulator's exercise profile."""
+    from .backends.simulator_profiles import PROFILE
+    from .core.workspace import Lab, initialize
+    if task not in TASK_IDS:
+        raise JobError("E_SCHEMA", f"'task' must be one of {', '.join(TASK_IDS)}")
+    scratch = Path(tempfile.mkdtemp(prefix="mlab-job-"))
+    try:
+        initialize(scratch / "ws", task, "mlsys", simulator_profile=PROFILE)
+        lab = Lab(scratch / "ws", readonly=True)
+        try:
+            yield lab
+        finally:
+            lab.close()
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _flat_metrics(metrics):
+    flat = {}
+    for name, value in metrics.items():
+        if type(value) in {int, float}:
+            flat[name] = value
+        elif isinstance(value, dict):
+            for stat, inner in value.items():
+                if type(inner) in {int, float}:
+                    flat[f"{name}.{stat}"] = inner
+    return flat
+
+
+def templates(payload):
+    from .core.io import load
+    with _exercise(payload.get("task")) as lab:
+        task = lab.task
+        root = lab.root / "task"
+        designs = [load(root / "baselines/baseline.yaml")]
+        for path in sorted((root / "examples/candidates").glob("*.yaml")):
+            design = load(path)
+            if design["id"] not in {d["id"] for d in designs}:
+                designs.append(design)
+        profile = load(root / "profile.json")
+        return {"task": {key: task[key] for key in ("id", "title", "objective", "constraints", "decision_space", "holdouts",
+                                                    "workload_mode", "key_metrics", "budget", "infra_options")},
+                "profile": {"id": profile["id"], "notice": profile["notice"]}, "templates": designs}
+
+
+def evaluate(payload):
+    from .backends.simulator_backend import request_bytes
+    from .backends.simulator_http import SimulatorAPIError, SimulatorInProcessClient
+    from .core.io import LabError
+    from .core.metrics import get_metric, verdict
+    candidates = payload.get("candidates")
+    seeds = payload.get("seeds", [42])
+    workloads = payload.get("workloads", ["development"])
+    if not isinstance(candidates, list) or not candidates:
+        raise JobError("E_SCHEMA", "evaluate needs a nonempty 'candidates' list")
+    if not (isinstance(seeds, list) and seeds and all(type(seed) is int for seed in seeds)):
+        raise JobError("E_SCHEMA", "'seeds' must be a nonempty list of integers")
+    if not (isinstance(workloads, list) and workloads and all(isinstance(w, str) for w in workloads)):
+        raise JobError("E_SCHEMA", "'workloads' must be a nonempty list of names")
+    if len(candidates) * len(seeds) * len(workloads) > MAX_EVALUATIONS:
+        raise JobError("E_BUDGET", f"at most {MAX_EVALUATIONS} candidate x seed x workload evaluations per job")
+    client = SimulatorInProcessClient()
+    results = []
+    with _exercise(payload.get("task")) as lab:
+        unknown = sorted(set(workloads) - {"development", *lab.task["holdouts"]})
+        if unknown:
+            raise JobError("E_SCHEMA", f"unknown workloads {unknown}; use development or {lab.task['holdouts']}")
+        objective = lab.task["objective"]
+        settings = lab.config["simulator_service"]
+        for raw in candidates:
+            identifier = raw.get("id") if isinstance(raw, dict) else None
+            try:
+                candidate = lab.validate_candidate(raw, seeds[0])
+            except (LabError, ValueError) as error:
+                results.append({"candidate_id": identifier, "status": "rejected",
+                                "error": {"code": getattr(error, "code", "E_SCHEMA"), "message": str(error)[:400]}})
+                continue
+            for seed in seeds:
+                for workload in workloads:
+                    holdout = None if workload == "development" else workload
+                    spec = lab.make_spec(candidate, seed, 0, "holdout" if holdout else "development", holdout)
+                    row = {"candidate_id": candidate["id"], "seed": seed, "workload": workload}
+                    try:
+                        raw_request = request_bytes(lab.root, spec, f"{candidate['id']}:{seed}:{workload}", settings)
+                        result = client.simulate(raw_request)["result"]
+                    except SimulatorAPIError as error:
+                        results.append({**row, "status": "rejected",
+                                        "error": {"code": error.error.get("code", "E_SIMULATOR"), "message": str(error)[:400]}})
+                        continue
+                    judged, constraints = verdict(result["metrics"], lab.task, {"passes_floor": True},
+                                                  result["status"], result["failure_class"])
+                    value = get_metric(result["metrics"], objective["metric"]) if objective.get("metric") else None
+                    results.append({**row, "status": result["status"], "failure_class": result["failure_class"],
+                                    "meets_constraints": judged == "constraints_met",
+                                    "metrics": _flat_metrics(result["metrics"]),
+                                    "constraints": [{k: c.get(k) for k in ("metric", "op", "value", "observed", "met")}
+                                                    for c in constraints if c.get("value") is not None],
+                                    "objective": {**objective, "value": value}})
+    import mlsys_sim
+    return {"results": results, "simulator_version": mlsys_sim.__version__}
+
+
 def measure(payload):
     raise JobError("E_NOT_IMPLEMENTED", "GPU sandbox measurements arrive with the measurement harness (mlab.executor.v1)")
 
 
-JOBS = {"simulate": simulate, "sweep": sweep, "calibrate": calibrate, "measure": measure}
+JOBS = {"simulate": simulate, "templates": templates, "evaluate": evaluate, "sweep": sweep, "calibrate": calibrate,
+        "measure": measure}
 
 
 def run(name, payload_text):

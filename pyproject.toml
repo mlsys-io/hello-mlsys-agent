@@ -1,0 +1,11 @@
+# Virtual uv workspace: the root is not a package. Each member stays an
+# independently installable project, because each is mirrored to its own repo.
+[tool.uv.workspace]
+members = ["packages/simulator", "packages/lab"]
+
+[tool.uv.sources]
+mlsys-simulator = { workspace = true }
+hello-mlsys-lab = { workspace = true }
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "httpx>=0.27,<1", "ruff==0.17.3", "mypy==2.4.1"]

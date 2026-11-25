@@ -1,0 +1,20 @@
+# hello-mlsys-agent GPU sandbox image: vLLM plus the measurement harness (packages/lab/src/mlab/sandbox).
+# It serves ONE design on ONE GPU with vLLM, replays the workload, and returns an mlab.executor.v1 record
+# (per-request timings, peak memory, full hardware/software identity). Designs vLLM cannot reproduce are refused.
+#
+#   docker run --rm -i --gpus all ghcr.io/mlsys-io/hello-mlsys-agent-sandbox:<tag> < job.json > record.json
+#   job.json: {"spec": {"strategy": <mlab Strategy>}, "requests": [<workload rows>], "label": "run-1"}
+#
+# The model weights (Qwen3 0.6B/1.7B/4B at pinned revisions) are downloaded from Hugging Face on first use, so the
+# container needs network access. A job runner may replace the entrypoint: `import vllm_harness` works from /opt/mlab.
+# vLLM is pinned by digest (v0.34.0 and :latest were the same image when this was written).
+FROM vllm/vllm-openai:v0.34.0@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1
+
+ENV PYTHONUNBUFFERED=1 PYTHONPATH=/opt/mlab
+COPY packages/lab/src/mlab/sandbox/vllm_harness.py /opt/mlab/vllm_harness.py
+RUN python3 -c "import vllm_harness, aiohttp, vllm; print('sandbox harness ok, vllm', vllm.__version__)"
+
+LABEL org.opencontainers.image.source="https://github.com/mlsys-io/hello-mlsys-agent" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.description="mlsys GPU sandbox: vLLM + measurement harness (mlab.executor.v1)"
+ENTRYPOINT ["python3", "/opt/mlab/vllm_harness.py"]

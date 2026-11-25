@@ -83,6 +83,33 @@ runner can also import `mlab.jobs.run(name, payload_text)` inside the image. Tea
 (`packages/lab/src/mlab/teacher/prompts/`) and rubrics (`packages/lab/tasks/*/rubric.yaml`) are data files, so
 other front ends can reuse them from a pinned tag.
 
+
+## GPU sandbox (real measurements)
+
+The simulator predicts; the sandbox measures. `Dockerfile.sandbox` is vLLM plus a small harness
+(`packages/lab/src/mlab/sandbox/vllm_harness.py`) that serves **one design on one GPU**, replays the workload with its
+real arrival times, and returns an `mlab.executor.v1` record: per-request first-token and finish times, peak GPU and KV
+memory, and the hardware and software identity (card, driver, vLLM and PyTorch versions, model revision, exact engine
+arguments). `protocol-v1.21` simulates the RTX 5080, so a prediction and its measurement are for the same card.
+
+```bash
+docker run --rm -i --gpus all ghcr.io/mlsys-io/hello-mlsys-agent-sandbox:<tag> < job.json > record.json
+# job.json: {"spec": {"strategy": <mlab Strategy>}, "requests": [<workload rows>], "label": "run-1"}
+```
+
+- **Measured as designed, or refused.** vLLM cannot reproduce some settings the exercises allow: non-continuous
+  batching with concurrency above 1, a KV-cache fraction, speculative decoding, replicas or parallelism. These exit with
+  `E_UNSUPPORTED` and the setting named, before any download or GPU use, so nobody reads a measurement of something
+  other than their choice. Chunked prefill, the memory utilization, a KV budget and prefix caching are mapped to vLLM
+  arguments. Exercise 9.3 (four GPUs) cannot be measured on one card.
+- **Pinned.** vLLM is pinned by digest and the three Qwen3 models by Hugging Face commit; weights download on first use
+  (network access needed). Expect minutes per run, not seconds, and a cold image pull on a new machine.
+- **What a number means.** The record is a single deterministic-seeded run of one workload on one card. It is evidence
+  about that run, not a calibration of the simulator.
+
+The image is built and published by `.github/workflows/sandbox-image.yml` for `sandbox-vX.Y.Z` tags. The harness is
+unit-tested without a GPU in `packages/lab/tests/test_sandbox.py`.
+
 ## Development
 
 ```bash

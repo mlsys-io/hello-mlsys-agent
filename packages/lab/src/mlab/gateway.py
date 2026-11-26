@@ -47,13 +47,17 @@ def output_budget(body, max_tokens, min_tokens=0):
 
 def to_openai(body, model, max_tokens, min_tokens=0):
     messages = []
+    trailing_system = []
     if body.get("system"):
         messages.append({"role": "system", "content": text_content(body["system"])})
     for message in body.get("messages", []):
         role = message["role"]
         content = message.get("content", [])
         if isinstance(content, str):
-            messages.append({"role": role, "content": content})
+            if role == "system":
+                trailing_system.append(content)
+            else:
+                messages.append({"role": role, "content": content})
             continue
         if role == "assistant":
             texts, calls = [], []
@@ -82,10 +86,20 @@ def to_openai(body, model, max_tokens, min_tokens=0):
             if remaining:
                 messages.append({"role": "user", "content": text_content(remaining)})
         elif role == "system":
-            # Claude Code with its default prompt adds system messages mid-conversation; OpenAI accepts them anywhere.
-            messages.append({"role": "system", "content": text_content(content)})
+            # Claude Code with its default prompt adds system messages mid-conversation (hook context).
+            # Collect them and merge into the one leading system message: OpenAI accepts them anywhere,
+            # but vLLM accepts exactly one system message, only in the first position.
+            trailing_system.append(text_content(content))
         else:
             raise GatewayError("Unsupported message role.")
+    if trailing_system:
+        # Merge into the one leading system message: vLLM accepts exactly one system
+        # message, and only in the first position.
+        merged = "\n\n".join(trailing_system)
+        if messages and messages[0].get("role") == "system":
+            messages[0]["content"] += "\n\n" + merged
+        else:
+            messages.insert(0, {"role": "system", "content": merged})
     result = {"model": model, "messages": messages, "stream": False,
               "max_tokens": output_budget(body, max_tokens, min_tokens)}
     tools = []

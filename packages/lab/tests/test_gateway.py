@@ -96,11 +96,25 @@ def test_http_stream_auth_error_sanitization_and_tool_roundtrip():
         upstream.server_close()
 
 
-def test_system_messages_inside_the_conversation_pass_through():
+def test_system_messages_inside_the_conversation_merge_into_the_lead():
     # Claude Code with its default prompt inserts system messages between turns (seen with 2.1.317).
+    # OpenAI accepts them anywhere, but vLLM accepts exactly one system message, only in the first
+    # position, so the gateway merges mid-conversation system content into the lead system message.
     body = {"system": [{"type": "text", "text": "base"}], "max_tokens": 100, "messages": [
         {"role": "user", "content": [{"type": "text", "text": "hi"}]},
-        {"role": "system", "content": [{"type": "text", "text": "reminder"}]}]}
+        {"role": "system", "content": [{"type": "text", "text": "reminder"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+        {"role": "system", "content": "second reminder as a plain string"}]}
     converted = to_openai(body, "m", 4096)
-    assert [m["role"] for m in converted["messages"]] == ["system", "user", "system"]
-    assert converted["messages"][2]["content"] == "reminder"
+    assert [m["role"] for m in converted["messages"]] == ["system", "user", "assistant"]
+    assert converted["messages"][0]["content"] == "base\n\nreminder\n\nsecond reminder as a plain string"
+
+
+def test_system_message_only_leads_when_there_is_no_lead_system():
+    # With no top-level system block, the merged mid-conversation content still leads as a system.
+    body = {"max_tokens": 100, "messages": [
+        {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+        {"role": "system", "content": "hook context"}]}
+    converted = to_openai(body, "m", 4096)
+    assert [m["role"] for m in converted["messages"]] == ["system", "user"]
+    assert converted["messages"][0]["content"] == "hook context"

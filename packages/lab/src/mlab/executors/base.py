@@ -61,6 +61,11 @@ class MeasurementRecord(BaseModel):
     # ({"download_s", "startup_s", "replay_s", "server", "batch_total_s"}; shared phases are reported for each design).
     weights_from: Literal["cache", "download"] | None = None
     timings: dict[str, float | int | None] | None = None
+    # Optional, when the workload was sent as a trace (its exact file text): the sha256 the sandbox checked before
+    # replaying it, which a simulation of the same trace reports too, and for a resampled workload its seed and variant.
+    trace_sha256: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    resample_seed: int | None = Field(default=None, ge=0)
+    resample_variant: str | None = None
 
     @property
     def evidence_level(self):

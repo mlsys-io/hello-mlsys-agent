@@ -114,6 +114,13 @@ docker run --rm -i --gpus all ghcr.io/mlsys-io/hello-mlsys-agent-sandbox:<tag> <
   measurement. Once the time left cannot fit the longest startup and replay seen so far, the remaining designs come back
   `{"status": "not_measured", "reason": "out of time in this GPU session"}`. The answer is
   `{"ok": true, "results": [...], "summary": {...}}`, one result per design with its own status.
+- **Traces and resamples.** A design may send its workload as `"trace": {"text", "sha256", "resample"?}`: the exact
+  JSONL text of the trace file and its `sha256:<hex>`. The sandbox hashes the text, refuses it unless it matches, and
+  parses it the way the simulator parses that file, so a measurement and a simulation that report the same
+  `trace_sha256` replayed the same bytes. A resampled workload (`evaluate`'s `resamples`, generated on CPU by the same
+  `write_resample` code, never inside the sandbox) is a trace with `"resample": {"seed", "variant"}`; at most 2
+  distinct ones per GPU session. The record of a trace carries `trace_sha256`, plus `resample_seed` and
+  `resample_variant` for a resample.
 - **Weight cache.** A complete snapshot in a read-only Hugging Face hub cache at `$MLAB_HF_RO_CACHE` (default
   `/cache/hf`, either the hub directory or an `HF_HOME` holding `hub/`; empty disables it) is served offline with no
   download; otherwise the weights download to `HF_HOME` as before. Each record says `weights_from: cache | download`.

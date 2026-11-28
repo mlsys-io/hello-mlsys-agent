@@ -66,6 +66,17 @@ class MeasurementRecord(BaseModel):
     trace_sha256: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     resample_seed: int | None = Field(default=None, ge=0)
     resample_variant: str | None = None
+    # Optional, from the vLLM sandbox (sandbox-v0.2.3+): the GPU energy over the replay window (the first request's
+    # release to the last one's finish), where it came from, and the idle draw sampled just before. Absent when not
+    # measured (`energy_source` "unavailable"), never 0. `energy_j_per_req_net` subtracts the idle draw, so it may
+    # be negative within noise.
+    energy_source: Literal["nvml_counter", "nvml_power", "nvidia_smi", "unavailable"] | None = None
+    energy_j: float | None = Field(default=None, ge=0)
+    energy_window_s: float | None = Field(default=None, gt=0)
+    energy_j_per_req: float | None = Field(default=None, ge=0)
+    energy_j_per_req_net: float | None = None
+    power_w_avg: float | None = Field(default=None, ge=0)
+    power_w_idle: float | None = Field(default=None, ge=0)
 
     @property
     def evidence_level(self):

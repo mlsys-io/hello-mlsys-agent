@@ -9,6 +9,9 @@
 # their pinned revisions as a read-only hub cache under /cache/hf (MLAB_HF_RO_CACHE): a GPU run starts vLLM without
 # downloading anything, and a worker that has pulled this image once pays no download again. Qwen3-4B (8 GB) is
 # downloaded from Hugging Face on first use, so the container still needs network access for it.
+# Energy (sandbox-v0.2.3+): the harness reads NVML through the bindings the base image already ships (nvidia-ml-py's
+# `pynvml`, else `vllm.third_party.pynvml`, which vLLM vendors), so nothing is installed for it; the check below fails
+# the build if neither imports. libnvidia-ml itself comes from the driver, mounted by `--gpus` with nvidia-smi.
 # A job runner may replace the entrypoint: `import vllm_harness` works from /opt/mlab.
 # vLLM is pinned by digest (v0.34.0 and :latest were the same image when this was written).
 FROM vllm/vllm-openai:v0.34.0@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1
@@ -23,7 +26,8 @@ COPY packages/lab/src/mlab/sandbox/vllm_harness.py /opt/mlab/vllm_harness.py
 RUN python3 -c "import vllm_harness as h, aiohttp, vllm; \
 assert h.cached_snapshot('Qwen/Qwen3-0.6B', h.REVISIONS['Qwen/Qwen3-0.6B']), 'baked 0.6B incomplete'; \
 assert h.cached_snapshot('Qwen/Qwen3-1.7B', h.REVISIONS['Qwen/Qwen3-1.7B']), 'baked 1.7B incomplete'; \
-print('sandbox harness ok, vllm', vllm.__version__, '- weights baked: 0.6B, 1.7B')"
+nvml = h.nvml_module(); assert nvml is not None, 'no NVML bindings for the energy meter'; \
+print('sandbox harness ok, vllm', vllm.__version__, '- weights baked: 0.6B, 1.7B - NVML via', nvml.__name__)"
 
 LABEL org.opencontainers.image.source="https://github.com/mlsys-io/hello-mlsys-agent" \
       org.opencontainers.image.licenses="MIT" \

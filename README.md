@@ -87,7 +87,7 @@ other front ends can reuse them from a pinned tag.
 ## GPU sandbox (real measurements)
 
 The simulator predicts; the sandbox measures. `Dockerfile.sandbox` is vLLM plus a small harness
-(`packages/lab/src/mlab/sandbox/vllm_harness.py`) that serves **one design on one GPU**, replays the workload with its
+(`packages/lab/src/mlab/sandbox/vllm_harness.py`) that serves **one design at a time on one GPU**, replays the workload with its
 real arrival times, and returns an `mlab.executor.v1` record: per-request first-token and finish times, peak GPU and KV
 memory, and the hardware and software identity (card, driver, vLLM and PyTorch versions, model revision, exact engine
 arguments). `protocol-v1.21` simulates the RTX 5080, so a prediction and its measurement are for the same card.
@@ -106,6 +106,20 @@ docker run --rm -i --gpus all ghcr.io/mlsys-io/hello-mlsys-agent-sandbox:<tag> <
   (network access needed). Expect minutes per run, not seconds, and a cold image pull on a new machine.
 - **What a number means.** The record is a single deterministic-seeded run of one workload on one card. It is evidence
   about that run, not a calibration of the simulator.
+- **Batches.** `{"designs": [{"id", "spec", "requests"?, "label"?}], "requests", "label", "deadline_s"}` on stdin (or
+  `measure_many(designs, requests, deadline_s=3300)`) measures many designs in one GPU session: every design is checked
+  before vLLM is imported, weights are fetched once per model revision, one server is started per distinct set of engine
+  arguments (restarted between them), and each distinct workload is replayed once on it with fresh VRAM/KV peaks (a
+  prefix cache is emptied, or the server restarted, between workloads). Designs identical in all of that share one
+  measurement. Once the time left cannot fit the longest startup and replay seen so far, the remaining designs come back
+  `{"status": "not_measured", "reason": "out of time in this GPU session"}`. The answer is
+  `{"ok": true, "results": [...], "summary": {...}}`, one result per design with its own status.
+- **Weight cache.** A complete snapshot in a read-only Hugging Face hub cache at `$MLAB_HF_RO_CACHE` (default
+  `/cache/hf`, either the hub directory or an `HF_HOME` holding `hub/`; empty disables it) is served offline with no
+  download; otherwise the weights download to `HF_HOME` as before. Each record says `weights_from: cache | download`.
+- **Timings.** Each record carries `timings` (`download_s`, `startup_s`, `replay_s` of the phases that produced it,
+  the `server` it ran on and `batch_total_s`); the batch `summary` has the same phases summed without double counting,
+  plus counts of downloads, cache hits, servers, replays and of each result status.
 
 The image is built and published by `.github/workflows/sandbox-image.yml` for `sandbox-vX.Y.Z` tags. The harness is
 unit-tested without a GPU in `packages/lab/tests/test_sandbox.py`.

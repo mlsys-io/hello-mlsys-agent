@@ -57,6 +57,10 @@ class MeasurementRecord(BaseModel):
     source: Source
     step_records: list[dict[str, Any]] = []
     logs: list[str] = []
+    # Optional, from the vLLM sandbox: where the weights came from and how long each phase of the GPU session took
+    # ({"download_s", "startup_s", "replay_s", "server", "batch_total_s"}; shared phases are reported for each design).
+    weights_from: Literal["cache", "download"] | None = None
+    timings: dict[str, float | int | None] | None = None
 
     @property
     def evidence_level(self):

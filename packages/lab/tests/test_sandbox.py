@@ -203,8 +203,9 @@ def spec(model="llm-1.7b", prefix_cache=False, **serving):
 class FakeGPU:
     """The layers under measure_many, on a fake clock. Each replay reports the VRAM/KV peak `peaks` gives it."""
 
-    def __init__(self, monkeypatch, tmp_path, startup_s=100.0, replay_s=50.0, download_s=30.0):
+    def __init__(self, monkeypatch, tmp_path, startup_s=100.0, replay_s=50.0, download_s=30.0, nvml=None):
         self.now, self.startup_s, self.replay_s, self.download_s = 0.0, startup_s, replay_s, download_s
+        self.nvml, self.meters, self.smi_power = nvml, [], ["[N/A]"]  # no NVML, no power reading: by default
         self.downloads, self.servers, self.replays, self.kvs, self.resets = [], [], [], [], []
         self.fail_startup, self.reset_ok, self.peaks, self.timed_out = set(), True, {}, False
         fake = self
@@ -250,7 +251,16 @@ class FakeGPU:
             fake.replays.append((len(fake.servers), [r["request_id"] for r in requests], deadline))
             vram, kv = fake.peaks.get(requests[0]["request_id"], (9000.0, 0.25))
             server.memory.peak_mib, fake.kvs[-1].peak = vram, kv
-            fake.now = max(fake.now + fake.replay_s, t0)
+            end = max(fake.now + fake.replay_s, t0)
+            if fake.nvml is not None:  # idle until the first release, busy until the last finish
+                fake.nvml.run_until(t0)
+                fake.now, fake.nvml.busy = t0, True
+                fake.sample()  # what the meter's sampling thread reads as the replay starts...
+                fake.nvml.run_until(end)
+                fake.now = end
+                fake.sample()  # ... and as it ends
+                fake.nvml.busy = False
+            fake.now = end
             if fake.timed_out:
                 fake.now = max(fake.now, deadline)  # every request ran into the deadline
             status = "timed_out" if fake.timed_out else "completed"
@@ -266,9 +276,21 @@ class FakeGPU:
             return fake.reset_ok
 
         def smi(*fields):
+            if fields == ("power.draw",):
+                return list(fake.smi_power)
             return ["0"] if fields == ("memory.used",) else list(GPU_NAME)
 
+        class Meter(harness.EnergyMeter):
+            def __init__(self, uuid=None, period_s=harness.POWER_PERIOD_S, nvml=None):
+                super().__init__(uuid, period_s, nvml)
+                fake.meters.append(self)
+
+            def start(self):  # no sampling thread on a fake clock: the fake replay samples at t0 instead
+                pass
+
         self.versions_calls = 0
+        if nvml is not None:
+            nvml.clock = self
 
         def versions():
             self.versions_calls += 1
@@ -276,9 +298,57 @@ class FakeGPU:
 
         for name, value in {"time": Clock, "Server": Server, "KVSampler": KV, "wait_ready": wait_ready,
                             "replay": replay, "download_weights": download, "reset_prefix_cache": reset, "smi": smi,
-                            "runtime_versions": versions}.items():
+                            "runtime_versions": versions, "EnergyMeter": Meter,
+                            "nvml_module": lambda: fake.nvml}.items():
             monkeypatch.setattr(harness, name, value)
         monkeypatch.setenv("MLAB_HF_RO_CACHE", str(tmp_path / "ro-cache"))  # empty: every model is a miss
+
+
+    def sample(self):
+        for meter in self.meters:
+            meter.mark()
+
+
+class FakeNVML:
+    """The NVML calls the energy meter makes, on FakeGPU's clock: `idle_w` while nothing runs, `busy_w` during a
+    replay. `counter` / `power` False make that call raise NVML_ERROR_NOT_SUPPORTED, as on a card without it."""
+
+    class NVMLError(Exception):
+        pass
+
+    def __init__(self, idle_w=30.0, busy_w=180.0, counter=True, power=True, by_uuid=True):
+        self.idle_w, self.busy_w, self.counter, self.power, self.by_uuid = idle_w, busy_w, counter, power, by_uuid
+        self.clock, self.t, self.mj, self.busy, self.handles = None, 0.0, 7.5e9, False, []
+
+    def run_until(self, t):
+        if t > self.t:
+            self.mj += (t - self.t) * (self.busy_w if self.busy else self.idle_w) * 1000
+            self.t = t
+
+    def nvmlInit(self):
+        pass
+
+    def nvmlDeviceGetHandleByUUID(self, uuid):
+        if not self.by_uuid:
+            raise self.NVMLError("Not Found")
+        self.handles.append(uuid)
+        return "handle:" + uuid
+
+    def nvmlDeviceGetHandleByIndex(self, index):
+        self.handles.append(index)
+        return f"handle:{index}"
+
+    def nvmlDeviceGetTotalEnergyConsumption(self, handle):
+        if not self.counter:
+            raise self.NVMLError("Not Supported")
+        self.run_until(self.clock.now)
+        return int(self.mj)  # mJ
+
+    def nvmlDeviceGetPowerUsage(self, handle):
+        if not self.power:
+            raise self.NVMLError("Not Supported")
+        self.run_until(self.clock.now)
+        return int((self.busy_w if self.busy else self.idle_w) * 1000)  # mW
 
 
 @pytest.fixture
@@ -629,3 +699,133 @@ def test_measure_takes_a_trace_too(gpu):
     trace = lab_traces()["resample:long_mix:2"]
     record = harness.measure({"spec": spec(), "trace": trace, "label": "c16-long_mix-2"})
     assert record["trace_sha256"] == trace["sha256"] and record["resample_variant"] == "long_mix"
+
+
+# --- energy: NVML's counter, else its power reading, else nvidia-smi, else nothing --------------------------------
+
+ENERGY_KEYS = ("energy_j", "energy_window_s", "energy_j_per_req", "power_w_avg", "power_w_idle", "energy_j_per_req_net")
+
+
+def measured_energy(monkeypatch, tmp_path, nvml=None, smi_power=None):
+    fake = FakeGPU(monkeypatch, tmp_path, nvml=nvml)
+    if smi_power is not None:
+        fake.smi_power = smi_power
+    out = harness.measure_many([{"id": "a", "spec": spec()}], rows("r001", "r002"))
+    result = by_id(out)["a"]
+    assert result["status"] == "measured"
+    MeasurementRecord.model_validate(result["record"])  # the energy fields are the lab's contract too
+    return fake, result["record"], out["summary"]
+
+
+def test_energy_comes_from_the_nvml_counter_over_the_replay_window(monkeypatch, tmp_path):
+    fake, rec, summary = measured_energy(monkeypatch, tmp_path, FakeNVML(idle_w=30.0, busy_w=180.0))
+    assert rec["energy_source"] == summary["energy_source"] == "nvml_counter"
+    # replay: t0 = 1 s after the clock starts, the last request finishes 50 s after it: a 49 s window, all busy
+    assert rec["energy_window_s"] == pytest.approx(49.0)
+    assert rec["energy_j"] == pytest.approx(180.0 * 49) and rec["power_w_avg"] == pytest.approx(180.0)
+    assert rec["energy_j_per_req"] == pytest.approx(180.0 * 49 / 2)  # two requests replayed
+    assert rec["power_w_idle"] == pytest.approx(30.0)  # the idle baseline, sampled with the server loaded
+    assert rec["energy_j_per_req_net"] == pytest.approx((180.0 - 30.0) * 49 / 2)
+    assert fake.nvml.handles == ["GPU-abc"]  # the card nvidia-smi named, by uuid
+    assert rec["timings"]["replay_s"] == 50.0  # the idle baseline is not part of the replay's time
+
+
+def test_the_idle_baseline_is_sampled_before_every_replay(monkeypatch, tmp_path):
+    fake = FakeGPU(monkeypatch, tmp_path, nvml=FakeNVML(idle_w=25.0))
+    start = fake.now
+    out = harness.measure_many([{"id": "a", "spec": spec()}, {"id": "b", "spec": spec(max_concurrency=8)}],
+                               rows("r001"))
+    assert [r["record"]["power_w_idle"] for r in out["results"]] == [pytest.approx(25.0)] * 2
+    # two servers: each 30 s download (once) + 100 s startup + 5 s idle + 50 s replay
+    assert fake.now - start == pytest.approx(30 + 2 * (100 + harness.IDLE_S + 50))
+
+
+def test_a_card_without_the_counter_integrates_nvml_power(monkeypatch, tmp_path):
+    _, rec, _ = measured_energy(monkeypatch, tmp_path, FakeNVML(idle_w=30.0, busy_w=180.0, counter=False))
+    assert rec["energy_source"] == "nvml_power"
+    assert rec["energy_j"] == pytest.approx(180.0 * 49) and rec["power_w_idle"] == pytest.approx(30.0)
+
+
+def test_an_unknown_uuid_falls_back_to_the_first_visible_gpu(monkeypatch, tmp_path):
+    fake, rec, _ = measured_energy(monkeypatch, tmp_path, FakeNVML(by_uuid=False))
+    assert fake.nvml.handles == [0] and rec["energy_source"] == "nvml_counter"
+
+
+def test_without_nvml_nvidia_smi_power_is_the_last_resort(monkeypatch, tmp_path):
+    _, rec, _ = measured_energy(monkeypatch, tmp_path, None, smi_power=["42.5"])
+    assert rec["energy_source"] == "nvidia_smi"
+    assert rec["power_w_avg"] == pytest.approx(42.5) and rec["power_w_idle"] == pytest.approx(42.5)
+
+
+def test_no_power_reading_at_all_is_unavailable_and_costs_no_idle_time(monkeypatch, tmp_path):
+    fake, rec, summary = measured_energy(monkeypatch, tmp_path, FakeNVML(counter=False, power=False))
+    assert rec["energy_source"] == summary["energy_source"] == "unavailable"
+    assert not any(key in rec for key in ENERGY_KEYS)  # missing is absent, never 0
+    assert fake.now == pytest.approx(30 + 100 + 50)  # no idle baseline taken: nothing to read it with
+    parsed = MeasurementRecord.model_validate(rec)
+    assert parsed.energy_j is None and parsed.energy_j_per_req is None
+
+
+def test_energy_fields_report_only_what_was_measured():
+    assert harness.energy_fields("nvml_counter", None, 10.0, 3) == {"energy_source": "unavailable"}
+    assert harness.energy_fields("nvml_counter", 100.0, 0.0, 3) == {"energy_source": "unavailable"}
+    assert harness.energy_fields("unavailable", 100.0, 10.0, 3) == {"energy_source": "unavailable"}
+    no_idle = harness.energy_fields("nvml_power", 100.0, 10.0, 4)
+    assert no_idle == {"energy_source": "nvml_power", "energy_j": 100.0, "energy_window_s": 10.0,
+                       "energy_j_per_req": 25.0, "power_w_avg": 10.0}
+    assert harness.energy_fields("nvml_power", 100.0, 10.0, 4, idle_w=8.0)["energy_j_per_req_net"] == 5.0
+
+
+class Readings:
+    """An EnergyMeter whose samples a test writes by hand."""
+
+    def __init__(self, source, points):
+        self.meter = harness.EnergyMeter.__new__(harness.EnergyMeter)
+        self.meter.source, self.meter.samples, self.meter.lock = source, list(points), threading.Lock()
+
+
+def test_the_counter_is_interpolated_at_the_window_edges():
+    meter = Readings("nvml_counter", [(0.0, 1000.0), (1.0, 1100.0), (2.0, 1300.0), (3.0, 1310.0)]).meter
+    assert meter.energy_j(0.5, 2.5) == pytest.approx(1305.0 - 1050.0)
+    assert meter.energy_j(1.0, 2.0) == pytest.approx(200.0)
+
+
+def test_sampled_power_is_integrated_by_trapezoids():
+    meter = Readings("nvml_power", [(0.0, 10.0), (1.0, 30.0), (2.0, 30.0)]).meter
+    assert meter.energy_j(0.0, 2.0) == pytest.approx(20.0 + 30.0)
+    assert meter.energy_j(0.5, 1.5) == pytest.approx(0.5 * (20 + 30) / 2 + 0.5 * 30)
+
+
+def test_a_window_the_samples_do_not_cover_is_no_reading():
+    meter = Readings("nvml_counter", [(1.0, 10.0), (2.0, 20.0)]).meter
+    assert meter.energy_j(0.5, 2.0) is None and meter.energy_j(1.0, 2.5) is None and meter.energy_j(2.0, 1.0) is None
+    backwards = Readings("nvml_counter", [(0.0, 50.0), (1.0, 10.0)]).meter  # the driver was reloaded
+    assert backwards.energy_j(0.0, 1.0) is None
+
+
+def test_an_nvml_that_fails_to_initialise_is_no_nvml(monkeypatch):
+    class Broken(FakeNVML):
+        def nvmlInit(self):
+            raise self.NVMLError("Driver Not Loaded")
+    monkeypatch.setattr(harness, "smi", lambda *fields: ["[N/A]"])
+    assert harness.energy_reader("GPU-abc", Broken()) == ("unavailable", None)
+
+
+def test_the_sampling_thread_reads_until_stopped():
+    import time
+
+    class Clock:
+        @property
+        def now(self):
+            return time.monotonic()
+    nvml = FakeNVML(idle_w=40.0)
+    nvml.clock, nvml.t = Clock(), time.monotonic()
+    meter = harness.EnergyMeter("GPU-abc", period_s=0.01, nvml=nvml)
+    meter.start()
+    start = meter.mark()
+    time.sleep(0.15)
+    end = meter.mark()
+    meter.stop.set()
+    meter.join(timeout=2)
+    assert not meter.is_alive() and len(meter.samples) >= 5
+    assert meter.energy_j(start, end) / (end - start) == pytest.approx(40.0, rel=0.05)

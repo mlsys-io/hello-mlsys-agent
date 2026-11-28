@@ -21,12 +21,23 @@ fresh prompt mix that `mlab.core.workloads.write_resample` drew from the develop
 trace with `"resample": {"seed", "variant"}`; at most MAX_RESAMPLES distinct ones per GPU session, so a session's GPU
 time stays bounded. The record of a trace carries `trace_sha256` (and `resample_seed` / `resample_variant`).
 
+ENERGY. Each replay also reports the GPU energy it used (`energy_fields`), from the best source the container has:
+NVML's total-energy counter (`nvmlDeviceGetTotalEnergyConsumption`, mJ, Volta and newer) read every POWER_PERIOD_S,
+else NVML's power reading (`nvmlDeviceGetPowerUsage`, mW) sampled every POWER_PERIOD_S and integrated, else
+`nvidia-smi --query-gpu=power.draw` sampled the same way, else nothing (`energy_source: "unavailable"` and no numbers:
+a missing energy is absent, never 0). The NVML bindings are nvidia-ml-py's `pynvml` or the copy vLLM vendors
+(`vllm.third_party.pynvml`); the image needs nothing extra. Before each replay the server, loaded and with nothing
+running, is sampled for IDLE_S seconds (`power_w_idle`). The replay window runs from the first request's release to
+the moment the last request finished, so `energy_j_per_req` is the whole card's energy over that window divided by
+the requests replayed, idle draw included; `energy_j_per_req_net` subtracts the idle draw over the same window.
+
 HONESTY RULE. A design is measured as designed or not at all. vLLM cannot reproduce some settings the exercises allow
 (non-continuous batching beyond one request, a KV fraction, speculative decoding, multi-GPU placement); those raise
 `Unsupported` naming the setting, so a student is never shown a measurement of something other than their choice.
 """
 import asyncio
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -54,6 +65,10 @@ OFFLINE_ENV = {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}  # served fro
 VOCAB_LOW, VOCAB_HIGH = 1000, 100000  # token ids that exist in every Qwen3 tokenizer
 MAX_RESAMPLES = 2  # distinct resampled workloads per GPU session: each one is another replay on the card
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+POWER_PERIOD_S = 0.1  # energy counter / power sampling period during a GPU session
+IDLE_S = 5.0  # idle baseline before each replay: the server loaded, nothing running
+ENERGY_SOURCES = ("nvml_counter", "nvml_power", "nvidia_smi", "unavailable")  # best first
+NVML_MODULES = ("pynvml", "vllm.third_party.pynvml")  # nvidia-ml-py, else the copy vLLM vendors
 
 
 class Unsupported(Exception):
@@ -126,6 +141,148 @@ class MemorySampler(threading.Thread):
         with self.lock:
             peak, self.peak_mib = self.peak_mib, 0.0
         return peak
+
+
+# --- energy --------------------------------------------------------------------------------------------------------
+
+def nvml_module():
+    """The NVML Python bindings this image ships (see NVML_MODULES), imported but not initialised, or None."""
+    import importlib
+    found = None
+    for name in NVML_MODULES:
+        try:
+            found = importlib.import_module(name)
+        except Exception:  # noqa: BLE001 - ImportError, or a broken install: try the next one
+            found = None
+        if found is not None:
+            break
+    return found
+
+
+def energy_reader(uuid=None, nvml=None):
+    """(source, read) for the GPU with this uuid (else the first one visible): `read()` returns the cumulative energy
+    in joules for `nvml_counter`, the power in watts for `nvml_power` / `nvidia_smi`, and None when a reading fails.
+    The first source that answers wins; ("unavailable", None) when none does."""
+    nvml = nvml_module() if nvml is None else nvml
+    handle = None
+    if nvml is not None:
+        try:
+            nvml.nvmlInit()
+            if uuid and uuid != "unknown":
+                try:
+                    handle = nvml.nvmlDeviceGetHandleByUUID(uuid)
+                except Exception:  # noqa: BLE001 - NVMLError: fall back to the first visible GPU
+                    handle = None
+            if handle is None:
+                handle = nvml.nvmlDeviceGetHandleByIndex(0)
+        except Exception:  # noqa: BLE001 - no driver, no device: no NVML
+            handle = None
+    if handle is not None:
+        for source, name in (("nvml_counter", "nvmlDeviceGetTotalEnergyConsumption"),
+                             ("nvml_power", "nvmlDeviceGetPowerUsage")):
+            call = getattr(nvml, name, None)
+            try:
+                float(call(handle))  # NVML_ERROR_NOT_SUPPORTED on a card without it
+                answers = True
+            except Exception:  # noqa: BLE001
+                answers = False
+            if not answers:
+                continue
+
+            def read(call=call):
+                try:
+                    return float(call(handle)) / 1000  # mJ -> J, mW -> W
+                except Exception:  # noqa: BLE001
+                    return None
+            return source, read
+
+    def smi_power():
+        try:
+            return float(smi("power.draw")[0])
+        except (ValueError, IndexError, OSError, subprocess.SubprocessError):
+            return None  # "[N/A]" on a card that does not report it
+    if smi_power() is not None:
+        return "nvidia_smi", smi_power
+    return "unavailable", None
+
+
+def _at(points, t):
+    """Linear interpolation of time-ordered (t, value) points at t (within their span)."""
+    for (t1, v1), (t2, v2) in itertools.pairwise(points):
+        if t1 <= t <= t2:
+            return v1 if t2 == t1 else v1 + (v2 - v1) * (t - t1) / (t2 - t1)
+    return points[-1][1]
+
+
+class EnergyMeter(threading.Thread):
+    """The GPU's energy over time windows. A thread samples the source every `period_s`; `mark()` takes one more
+    sample now and returns its time, so a window can start and end exactly where the caller says."""
+
+    def __init__(self, uuid=None, period_s=POWER_PERIOD_S, nvml=None):
+        super().__init__(daemon=True)
+        self.source, self.read = energy_reader(uuid, nvml)
+        self.period_s, self.samples, self.stop, self.lock = period_s, [], threading.Event(), threading.Lock()
+
+    @property
+    def available(self):
+        return self.source != "unavailable"
+
+    def run(self):
+        while self.available and not self.stop.is_set():
+            self.mark()
+            self.stop.wait(self.period_s)
+
+    def mark(self):
+        """Sample now; the sample's time (monotonic s), or None when the reading failed."""
+        if not self.available:
+            return None
+        before = time.monotonic()
+        value = self.read()
+        if value is None or not math.isfinite(value):
+            return None
+        at = (before + time.monotonic()) / 2  # nvidia-smi takes tens of ms to answer
+        with self.lock:
+            self.samples.append((at, value))
+        return at
+
+    def energy_j(self, start, end):
+        """Joules the GPU used between two monotonic times, or None when the samples do not cover the window: the
+        counter's difference, or the trapezoid integral of the sampled power."""
+        with self.lock:
+            points = sorted(self.samples, key=lambda point: point[0])  # stable: ties keep their order
+        if not points or end <= start or points[0][0] > start or points[-1][0] < end:
+            return None
+        if self.source == "nvml_counter":
+            joules = _at(points, end) - _at(points, start)
+            return joules if joules >= 0 else None  # a counter that went backwards (driver reload) is no reading
+        knots = [(start, _at(points, start))] + [p for p in points if start < p[0] < end] + [(end, _at(points, end))]
+        return sum((t2 - t1) * (w1 + w2) / 2 for (t1, w1), (t2, w2) in itertools.pairwise(knots))
+
+    def idle_w(self, seconds=IDLE_S):
+        """The average power over the next `seconds` (the caller makes sure nothing runs), or None."""
+        if not self.available:
+            return None
+        start = self.mark()
+        time.sleep(seconds)
+        end = self.mark()
+        joules = self.energy_j(start, end) if start is not None and end is not None else None
+        return joules / (end - start) if joules is not None else None
+
+
+def energy_fields(source, energy_j, window_s, requests, idle_w=None):
+    """A replay's energy fields for its record: `energy_source` always; `energy_j`, `energy_window_s`,
+    `energy_j_per_req` and `power_w_avg` only when the window was measured; `power_w_idle` and
+    `energy_j_per_req_net` (idle draw over the window subtracted) only when the idle baseline was too. A source that
+    could not measure this window is reported as unavailable, never as 0 J."""
+    if source not in ENERGY_SOURCES or source == "unavailable" or energy_j is None or not window_s \
+            or window_s <= 0 or not requests:
+        return {"energy_source": "unavailable"}
+    out = {"energy_source": source, "energy_j": round(energy_j, 3), "energy_window_s": round(window_s, 3),
+           "energy_j_per_req": round(energy_j / requests, 4), "power_w_avg": round(energy_j / window_s, 2)}
+    if idle_w is not None:
+        out["power_w_idle"] = round(idle_w, 2)
+        out["energy_j_per_req_net"] = round((energy_j - idle_w * window_s) / requests, 4)
+    return out
 
 
 def free_port():
@@ -455,7 +612,7 @@ def measure_many(designs, requests=None, *, deadline_s=DEADLINE_S, label=None):
     started = time.monotonic()
     end = math.inf if deadline_s is None else started + float(deadline_s)
     inputs = check_batch(designs, requests)
-    results, planned = {}, []
+    results, planned, energy_source = {}, [], "unavailable"
     for design in designs:  # refuse first: nothing below runs for a design the sandbox cannot reproduce
         try:
             planned.append((design, plan(design["spec"])))
@@ -490,6 +647,9 @@ def measure_many(designs, requests=None, *, deadline_s=DEADLINE_S, label=None):
             baseline_mib = float(smi("memory.used")[0])
         except (ValueError, IndexError, OSError, subprocess.SubprocessError):
             baseline_mib = 0.0
+        meter = EnergyMeter(gpu[1])
+        energy_source = meter.source
+        meter.start()
         try:
             for (model, revision), by_args in groups.items():
                 snapshot = cached_snapshot(model, revision)
@@ -512,9 +672,11 @@ def measure_many(designs, requests=None, *, deadline_s=DEADLINE_S, label=None):
                     seen["download"].append(download_s)
                 for workloads in by_args.values():
                     serve(workloads, path, env, weights_from, download_s, need, fail, seen, totals, counts,
-                          records, results, versions, gpu, baseline_mib, end, label)
+                          records, results, versions, gpu, baseline_mib, end, label, meter)
         except OutOfTime:
             pass
+        finally:
+            meter.stop.set()
     for design in designs:
         results.setdefault(design["id"], {"id": design["id"], "status": "not_measured", "reason": OUT_OF_TIME})
         if results[design["id"]]["status"] == "measured":
@@ -525,13 +687,15 @@ def measure_many(designs, requests=None, *, deadline_s=DEADLINE_S, label=None):
     statuses = [results[design["id"]]["status"] for design in designs]
     counts["resamples"] = len({fields["trace_sha256"] for _, fields in inputs.values() if "resample_seed" in fields})
     summary = {"total_s": total_s, "deadline_s": deadline_s, **{k: round(v, 2) for k, v in totals.items()}, **counts,
+               "energy_source": energy_source if planned else "unavailable",
                **{status: statuses.count(status) for status in ("measured", "not_measured", "unsupported", "failed")}}
     return {"results": [results[design["id"]] for design in designs], "summary": summary}
 
 
 def serve(workloads, path, env, weights_from, download_s, need, fail, seen, totals, counts, records, results,
-          versions, gpu, baseline_mib, end, label):
-    """One engine configuration: start its server, replay each distinct workload, stop it. Raises OutOfTime."""
+          versions, gpu, baseline_mib, end, label, meter=None):
+    """One engine configuration: start its server, replay each distinct workload, stop it. Raises OutOfTime.
+    With a `meter`, each replay is preceded by an idle baseline and its energy is measured (see ENERGY)."""
     engine = workloads[next(iter(workloads))][0][1]
     prefix_cache = "--enable-prefix-caching" in engine["args"]
     pending = list(workloads.values())
@@ -568,14 +732,18 @@ def serve(workloads, path, env, weights_from, download_s, need, fail, seen, tota
                 totals["startup_s"] += startup_s
                 startup_peak = server.memory.take_peak()
             server.memory.take_peak()  # the idle time since the last window belongs to no workload
+            idle_w = meter.idle_w() if meter is not None else None  # loaded, nothing running
             kv = KVSampler(server.port)
             kv.start()
             clock = time.monotonic()
             t0 = clock + 1.0  # arrivals are measured from here
+            if meter is not None:
+                meter.mark()  # a sample before t0, so the energy window can start exactly there
             cap = min(t0 + RUN_TIMEOUT_S, end)
             rows = entries[0][2]
             try:
                 observations = asyncio.run(replay(server.port, engine["model"], rows, t0, cap))
+                done = (meter.mark() if meter is not None else None) or time.monotonic()
                 log_text = server.log_text()
             except (RuntimeError, OSError, ValueError) as error:
                 fail(entries, error)
@@ -590,6 +758,9 @@ def serve(workloads, path, env, weights_from, download_s, need, fail, seen, tota
             if cap == end and time.monotonic() >= end and any(o["status"] == "timed_out" for o in observations):
                 raise OutOfTime()  # cut by the session, not by the design: not a measurement of it
             vram_peak = max(startup_peak, server.memory.take_peak())
+            # The replay window: from the first release (t0) to the moment the last request finished.
+            energy = energy_fields(meter.source if meter is not None else "unavailable",
+                                   meter.energy_j(t0, done) if meter is not None else None, done - t0, len(rows), idle_w)
             ids = [design["id"] for design, _, _ in entries]
             for design, _, _ in entries:
                 name = design.get("label") or (f"{label}-{design['id']}" if label else design["id"])
@@ -598,6 +769,7 @@ def serve(workloads, path, env, weights_from, download_s, need, fail, seen, tota
                                       revision=engine["revision"][:8], gpu=gpu, versions=versions,
                                       ready_s=download_s + startup_s, label=name)
                 record["weights_from"] = weights_from
+                record.update(energy)
                 record["timings"] = {"download_s": round(download_s, 2), "startup_s": round(startup_s, 2),
                                      "replay_s": round(replay_s, 2), "server": index}
                 records.append(record)

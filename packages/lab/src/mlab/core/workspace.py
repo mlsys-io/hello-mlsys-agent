@@ -451,8 +451,10 @@ class Lab:
             require(hashed(load(self.folder(w) / filename)) == w[key], "E_FROZEN_CHANGED", filename + " changed")
         return plan, candidates, w
 
-    def make_spec(self, candidate, seed, repeat, split, holdout=None):
-        reference = self.task["frozen"]["holdout_" + holdout if holdout else "workload_requests"]
+    def make_spec(self, candidate, seed, repeat, split, holdout=None, reference=None):
+        """`reference` ({"path" relative to task/, "sha256"}) overrides the frozen trace, e.g. a resampled workload."""
+        if reference is None:
+            reference = self.task["frozen"]["holdout_" + holdout if holdout else "workload_requests"]
         catalog = load(self.root / "task/catalog.json")
         requests = [json.loads(line) for line in inside(self.root / "task", reference["path"]).read_text(encoding="utf-8").splitlines() if line]
         for request in requests:

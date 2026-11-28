@@ -11,8 +11,10 @@ from mlab.backends.simulator_backend import request_bytes
 from mlab.backends.simulator_http import SimulatorInProcessClient
 from mlab.backends.simulator_profiles import PROFILE
 from mlab.core.io import ROOT, load
+from mlab.core import workloads
+from mlab.core.workloads import generate, write_resample
 from mlab.core.workspace import Lab, initialize
-from mlab.jobs import JobError, run
+from mlab.jobs import MAX_EVALUATIONS, MAX_RESAMPLES, JobError, run
 
 REPO = ROOT.parent.parent
 LOOP = REPO / "scripts/calibration/loop.py"
@@ -219,3 +221,158 @@ def test_sweep_reproduces_the_rtx5080_reference():
     reference = json.loads(run("sweep", json.dumps({"task": "9.3", "profile": V121})))["reference"]
     shipped = json.loads((ROOT / f"src/mlab/teacher/reference/9.3-{V121}.json").read_text())
     assert reference["best"]["value"] == shipped["best"]["value"] and reference["profile"] == V121
+
+
+# --- resampled workloads: fresh prompt mixes from the development reference ------------------------------------
+
+RESAMPLES = [{"seed": 7, "variant": "short_mix"}, {"seed": 7, "variant": "long_mix"}, {"seed": 11, "variant": "development"}]
+LEGACY_ROW_KEYS = {"candidate_id", "seed", "workload", "status", "failure_class", "meets_constraints", "metrics",
+                   "constraints", "objective"}
+
+
+def development_rows(tmp_path, task="9.2", profile=V121):
+    """The development reference rows and the frozen references of a fresh workspace, as the job sees them."""
+    root = tmp_path / "ws"
+    initialize(root, task, "mlsys", simulator_profile=profile)
+    lab = Lab(root, readonly=True)
+    try:
+        frozen = lab.task["frozen"]
+        path = root / "task" / frozen["workload_requests"]["path"]
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()], frozen
+    finally:
+        lab.close()
+
+
+def short_share(rows):
+    return sum(row["input_tokens"] <= 1024 for row in rows) / len(rows)
+
+
+def baseline_design(task="9.2", profile=V121):
+    return json.loads(run("templates", json.dumps({"task": task, "profile": profile})))["templates"][0]
+
+
+def test_a_resample_is_deterministic_and_content_addressed(tmp_path):
+    base, _ = development_rows(tmp_path)
+    first, meta = write_resample(tmp_path / "a", "9.2", base, 7, "short_mix")
+    again, _ = write_resample(tmp_path / "b", "9.2", base, 7, "short_mix")
+    assert first.read_bytes() == again.read_bytes() and first.name == again.name
+    assert first.name == meta["sha256"].removeprefix("sha256:") + ".requests.jsonl"
+    assert meta["sha256"] == "sha256:" + hashlib.sha256(first.read_bytes()).hexdigest()
+    other, _ = write_resample(tmp_path / "c", "9.2", base, 8, "short_mix")
+    assert other.name != first.name  # a different seed is a different mix
+    # Through the job: the same payload twice gives the same traces and the same numbers.
+    payload = json.dumps({"task": "9.2", "profile": V121, "candidates": [baseline_design()], "workloads": [],
+                          "resamples": RESAMPLES})
+    one, two = json.loads(run("evaluate", payload)), json.loads(run("evaluate", payload))
+    assert one["resamples"] == two["resamples"] and one["results"] == two["results"]
+
+
+def test_a_resample_keeps_arrivals_and_ids_and_redraws_prompts_from_the_pool(tmp_path):
+    base, _ = development_rows(tmp_path)
+    pool = {(r["input_tokens"], r["output_tokens_target"], r["category"], r["prefix_group"]) for r in base}
+    for seed, variant in [(7, "short_mix"), (7, "long_mix"), (11, "development")]:
+        rows = generate("9.2", base, seed, variant)
+        assert [(r["request_id"], r["arrival_ms"]) for r in rows] == [(r["request_id"], r["arrival_ms"]) for r in base]
+        assert all((r["input_tokens"], r["output_tokens_target"], r["category"], r["prefix_group"]) in pool for r in rows)
+    assert generate("9.2", base, 11, "development") != base  # the prompt mix does change
+
+
+def test_the_variants_shift_the_short_long_share(tmp_path):
+    base, _ = development_rows(tmp_path)
+    def mean_share(variant):
+        return sum(short_share(generate("9.2", base, seed, variant)) for seed in range(200)) / 200
+    development, short, long = mean_share("development"), mean_share("short_mix"), mean_share("long_mix")
+    assert abs(development - short_share(base)) < 0.05  # unbiased: the reference's own 9/12 short
+    assert short > development and short > 0.75
+    assert long < 0.3 < development
+
+
+def test_resample_rows_are_shaped_like_named_rows_plus_their_provenance(tmp_path):
+    _, frozen = development_rows(tmp_path)
+    out = json.loads(run("evaluate", json.dumps({"task": "9.2", "profile": V121, "candidates": [baseline_design()],
+                                                 "workloads": ["development"], "resamples": RESAMPLES})))
+    rows = out["results"]
+    assert [r["workload"] for r in rows] == ["development", "resample:short_mix:7", "resample:long_mix:7",
+                                             "resample:development:11"]
+    assert set(rows[0]) == LEGACY_ROW_KEYS
+    described = {d["workload"]: d for d in out["resamples"]}
+    for row, asked in zip(rows[1:], RESAMPLES):
+        assert set(row) == LEGACY_ROW_KEYS | {"resample_seed", "resample_variant", "trace_sha256"}
+        assert (row["resample_seed"], row["resample_variant"]) == (asked["seed"], asked["variant"])
+        assert row["trace_sha256"] == described[row["workload"]]["trace_sha256"]
+        assert row["status"] == "succeeded" and "ttft_ms.p99" in row["metrics"] and "goodput_tok_s" in row["metrics"]
+        assert row["objective"]["metric"] == "goodput_tok_s" and row["objective"]["value"] == row["metrics"]["goodput_tok_s"]
+    # Holdout hygiene: every trace was drawn from the development reference and none is a holdout.
+    holdouts = {reference["sha256"] for key, reference in frozen.items() if key.startswith("holdout_")}
+    assert {d["base_sha256"] for d in out["resamples"]} == {frozen["workload_requests"]["sha256"]}
+    assert not holdouts & {d["trace_sha256"] for d in out["resamples"]}
+    assert len({d["trace_sha256"] for d in out["resamples"]}) == 3
+    # The prompt mix moves the numbers: long prompts cost TTFT, so long_mix is no faster than short_mix.
+    by = {r["workload"]: r["metrics"] for r in rows}
+    assert by["resample:long_mix:7"]["ttft_ms.p99"] > by["resample:short_mix:7"]["ttft_ms.p99"]
+
+
+def test_a_resample_is_generated_from_the_development_reference_only(tmp_path, monkeypatch):
+    base, _ = development_rows(tmp_path)
+    seen = []
+    original = workloads.write_resample
+    monkeypatch.setattr(workloads, "write_resample", lambda d, t, rows, s, v: seen.append(rows) or original(d, t, rows, s, v))
+    run("evaluate", json.dumps({"task": "9.2", "profile": V121, "candidates": [baseline_design()], "workloads": [],
+                                "resamples": RESAMPLES[:1]}))
+    assert seen == [base]
+
+
+def test_a_resample_that_reproduces_a_holdout_is_refused():
+    # workspace.initialize draws short_prompt_distribution as generate(base, 1042, "short_mix").
+    with pytest.raises(JobError, match="reproduces the holdout 'short_prompt_distribution'") as error:
+        run("evaluate", json.dumps({"task": "9.2", "profile": V121, "candidates": [baseline_design()],
+                                    "resamples": [{"seed": 1042, "variant": "short_mix"}]}))
+    assert error.value.code == "E_SCHEMA"
+
+
+def test_the_budget_counts_resamples():
+    nine = [{"seed": s, "variant": "development"} for s in range(MAX_RESAMPLES)]
+    # 6 designs x 1 seed x (1 workload + 8 resamples) = 54 > 48, although 6 x 1 x 1 alone is well inside the budget.
+    assert 6 * (1 + MAX_RESAMPLES) > MAX_EVALUATIONS >= 6
+    with pytest.raises(JobError) as error:
+        run("evaluate", json.dumps({"task": "9.2", "candidates": [{}] * 6, "resamples": nine}))
+    assert error.value.code == "E_BUDGET"
+    with pytest.raises(JobError) as error:  # and the seeds multiply them too: 3 x 2 x (1 + 8) = 54
+        run("evaluate", json.dumps({"task": "9.2", "candidates": [{}] * 3, "seeds": [1, 2], "resamples": nine}))
+    assert error.value.code == "E_BUDGET"
+
+
+@pytest.mark.parametrize("payload", [
+    {"task": "9.2", "resamples": [{"seed": s} for s in range(MAX_RESAMPLES + 1)]},
+    {"task": "9.2", "resamples": [{"seed": 7, "variant": "short_mix"}] * 2},
+    {"task": "9.2", "resamples": [{"seed": 7, "variant": "tiny_mix"}]},
+    {"task": "9.2", "resamples": [{"seed": -1}]},
+    {"task": "9.2", "resamples": [{"seed": True}]},
+    {"task": "9.2", "resamples": [{"seed": 7, "extra": 1}]},
+    {"task": "9.2", "resamples": {"seed": 7}},
+    {"task": "9.1", "resamples": [{"seed": 7, "variant": "short_mix"}]},
+    {"task": "9.2", "workloads": []},
+])
+def test_bad_resamples_are_refused(payload):
+    with pytest.raises(JobError) as error:
+        run("evaluate", json.dumps({"candidates": [{}], **payload}))
+    assert error.value.code == "E_SCHEMA"
+
+
+def test_without_resamples_evaluate_is_unchanged():
+    design = baseline_design()
+    plain = {"task": "9.2", "profile": V121, "candidates": [design], "workloads": ["development", "short_prompt_distribution"]}
+    out = json.loads(run("evaluate", json.dumps(plain)))
+    assert "resamples" not in out and all(set(r) == LEGACY_ROW_KEYS for r in out["results"])
+    assert json.loads(run("evaluate", json.dumps(plain | {"resamples": []}))) == out
+    # Adding resamples leaves the named rows byte-for-byte as they were.
+    mixed = json.loads(run("evaluate", json.dumps(plain | {"resamples": RESAMPLES[:1]})))
+    assert mixed["results"][:2] == out["results"]
+
+
+@pytest.mark.parametrize("task", ["9.1", "9.3"])
+def test_development_resamples_cover_the_other_tasks(task):
+    out = json.loads(run("evaluate", json.dumps({"task": task, "profile": V121, "candidates": [baseline_design(task)],
+                                                 "workloads": [], "resamples": [{"seed": 5, "variant": "development"}]})))
+    [row] = out["results"]
+    assert row["workload"] == "resample:development:5" and row["status"] == "succeeded"

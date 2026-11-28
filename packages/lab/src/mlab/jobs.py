@@ -19,6 +19,12 @@ Jobs
              ->  {"results": [{candidate_id, seed, workload, status, meets_constraints, metrics, constraints, objective}]}
              Each candidate is checked against the task first (rejected ones get "error"); constraints are the task's
              performance constraints, since the exercise profile does not evaluate model quality.
+             Optional "resamples": [{"seed": int, "variant": "development" | "short_mix" | "long_mix"}, ...] (at most 8)
+             also scores every design on fresh prompt mixes generated from the DEVELOPMENT reference trace only (never a
+             holdout): arrival times stay, each request's prompt is redrawn from the task's empirical pool. Their rows
+             carry workload "resample:<variant>:<seed>", resample_seed, resample_variant and trace_sha256; the job also
+             returns "resamples" describing each trace. short_mix/long_mix (80% / 20% short prompts) are 9.2 only.
+             With resamples, "workloads" may be []. Resamples count in the evaluation budget.
   measure    reserved for GPU sandbox measurements (mlab.executor.v1); not implemented yet
 
 `templates`, `evaluate` and `sweep` take an optional "profile": the exercise profile, one per target GPU.
@@ -109,7 +115,9 @@ def calibrate(payload):
 
 
 MAX_EVALUATIONS = 48
+MAX_RESAMPLES = 8
 TASK_IDS = ("9.1", "9.2", "9.3")
+RESAMPLE_VARIANTS = ("development", "short_mix", "long_mix")
 
 
 def _profile(payload):
@@ -168,6 +176,58 @@ def templates(payload):
                 "profile": {"id": profile["id"], "notice": profile["notice"]}, "templates": designs}
 
 
+def _resample_requests(payload):
+    """The validated "resamples" list: unique {"seed", "variant"} pairs, at most MAX_RESAMPLES."""
+    resamples = payload.get("resamples", [])
+    if not isinstance(resamples, list) or len(resamples) > MAX_RESAMPLES:
+        raise JobError("E_SCHEMA", f"'resamples' must be a list of at most {MAX_RESAMPLES} {{seed, variant}} objects")
+    seen = []
+    for item in resamples:
+        if not (isinstance(item, dict) and set(item) <= {"seed", "variant"} and type(item.get("seed")) is int
+                and item["seed"] >= 0 and item.get("variant", "development") in RESAMPLE_VARIANTS):
+            raise JobError("E_SCHEMA", "each resample is {\"seed\": <int >= 0>, \"variant\": "
+                                       + " | ".join(RESAMPLE_VARIANTS) + "}")
+        pair = (item["seed"], item.get("variant", "development"))
+        if pair in seen:
+            raise JobError("E_SCHEMA", f"resample {pair[1]}:{pair[0]} is listed twice")
+        seen.append(pair)
+    if payload.get("task") != "9.2" and any(variant != "development" for _, variant in seen):
+        raise JobError("E_SCHEMA", "short_mix and long_mix resamples bias the 9.2 prompt mix; other tasks take 'development'")
+    return seen
+
+
+def _resample_traces(lab, resamples):
+    """Write each resampled workload into the throwaway lab's task folder and return its frozen reference.
+
+    Holdout hygiene: every resample is generated from the task's DEVELOPMENT reference trace
+    (task["frozen"]["workload_requests"], hash-checked here), never from a holdout file, so the holdouts stay unseen by
+    a design chosen on resamples. The holdouts are themselves draws of the same generator from the same reference
+    (workspace.initialize uses seeds 1042 + i), so a resample that reproduces a holdout's bytes is refused.
+    Generation is deterministic (mlab.core.workloads.generate with the given seed and variant), and the trace file is
+    named by its sha256, so equal resamples produce byte-identical requests.
+    """
+    from .core.io import hashed, inside
+    from .core.workloads import write_resample
+    task_dir = lab.root / "task"
+    development = lab.task["frozen"]["workload_requests"]
+    path = inside(task_dir, development["path"])
+    if hashed(path) != development["sha256"]:
+        raise JobError("E_FROZEN_CHANGED", "the development reference trace does not match its frozen hash")
+    base = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    holdouts = {reference["sha256"]: key.removeprefix("holdout_") for key, reference in lab.task["frozen"].items()
+                if key.startswith("holdout_")}
+    traces = []
+    for seed, variant in resamples:
+        trace, metadata = write_resample(task_dir / "resamples", lab.task["id"], base, seed, variant)
+        if metadata["sha256"] in holdouts:
+            raise JobError("E_SCHEMA", f"resample {variant}:{seed} reproduces the holdout {holdouts[metadata['sha256']]!r}; "
+                                       "pick another seed so the holdouts stay unseen")
+        traces.append({"workload": f"resample:{variant}:{seed}", "seed": seed, "variant": variant,
+                       "reference": {"path": trace.relative_to(task_dir).as_posix(), "sha256": metadata["sha256"]},
+                       "base_sha256": development["sha256"], "requests": metadata["requests"]})
+    return traces
+
+
 def evaluate(payload):
     from .backends.simulator_backend import request_bytes
     from .backends.simulator_http import SimulatorAPIError, SimulatorInProcessClient
@@ -180,18 +240,25 @@ def evaluate(payload):
         raise JobError("E_SCHEMA", "evaluate needs a nonempty 'candidates' list")
     if not (isinstance(seeds, list) and seeds and all(type(seed) is int for seed in seeds)):
         raise JobError("E_SCHEMA", "'seeds' must be a nonempty list of integers")
-    if not (isinstance(workloads, list) and workloads and all(isinstance(w, str) for w in workloads)):
+    resamples = _resample_requests(payload)
+    if not (isinstance(workloads, list) and (workloads or resamples) and all(isinstance(w, str) for w in workloads)):
         raise JobError("E_SCHEMA", "'workloads' must be a nonempty list of names")
-    if len(candidates) * len(seeds) * len(workloads) > MAX_EVALUATIONS:
-        raise JobError("E_BUDGET", f"at most {MAX_EVALUATIONS} candidate x seed x workload evaluations per job")
+    if len(candidates) * len(seeds) * (len(workloads) + len(resamples)) > MAX_EVALUATIONS:
+        raise JobError("E_BUDGET", f"at most {MAX_EVALUATIONS} candidate x seed x (workload + resample) evaluations per job")
     client = SimulatorInProcessClient()
     results = []
     with _exercise(payload.get("task"), _profile(payload)) as lab:
         unknown = sorted(set(workloads) - {"development", *lab.task["holdouts"]})
         if unknown:
             raise JobError("E_SCHEMA", f"unknown workloads {unknown}; use development or {lab.task['holdouts']}")
+        traces = _resample_traces(lab, resamples)
         objective = lab.task["objective"]
         settings = lab.config["simulator_service"]
+        # Named workloads first, exactly as before; then each resample, run on its own frozen reference.
+        runs = [(workload, None if workload == "development" else workload, None, {}) for workload in workloads]
+        runs += [(trace["workload"], trace["workload"], trace["reference"],
+                  {"resample_seed": trace["seed"], "resample_variant": trace["variant"],
+                   "trace_sha256": trace["reference"]["sha256"]}) for trace in traces]
         for raw in candidates:
             identifier = raw.get("id") if isinstance(raw, dict) else None
             try:
@@ -201,10 +268,9 @@ def evaluate(payload):
                                 "error": {"code": getattr(error, "code", "E_SCHEMA"), "message": str(error)[:400]}})
                 continue
             for seed in seeds:
-                for workload in workloads:
-                    holdout = None if workload == "development" else workload
-                    spec = lab.make_spec(candidate, seed, 0, "holdout" if holdout else "development", holdout)
-                    row = {"candidate_id": candidate["id"], "seed": seed, "workload": workload}
+                for workload, holdout, reference, extra in runs:
+                    spec = lab.make_spec(candidate, seed, 0, "holdout" if holdout else "development", holdout, reference)
+                    row = {"candidate_id": candidate["id"], "seed": seed, "workload": workload, **extra}
                     try:
                         raw_request = request_bytes(lab.root, spec, f"{candidate['id']}:{seed}:{workload}", settings)
                         result = client.simulate(raw_request)["result"]
@@ -222,7 +288,10 @@ def evaluate(payload):
                                                     for c in constraints if c.get("value") is not None],
                                     "objective": {**objective, "value": value}})
     import mlsys_sim
-    return {"results": results, "simulator_version": mlsys_sim.__version__}
+    described = [{key: trace[key] for key in ("workload", "seed", "variant", "base_sha256", "requests")}
+                 | {"trace_sha256": trace["reference"]["sha256"]} for trace in traces]
+    return {"results": results, **({"resamples": described} if described else {}),
+            "simulator_version": mlsys_sim.__version__}
 
 
 def measure(payload):

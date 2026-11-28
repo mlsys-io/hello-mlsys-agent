@@ -2,7 +2,7 @@
 is not installed, so it uses only the standard library plus what that image ships (aiohttp, torch, vllm, huggingface_hub).
 
     measure({"spec": <mlab RunSpec>, "requests": [<workload rows>], "label": str}) -> <mlab.executor.v1 MeasurementRecord>
-    measure_many([{"id", "spec", "requests"?, "label"?}, ...], requests, deadline_s=3300) -> {"results", "summary"}
+    measure_many([{"id", "spec", "requests"? | "trace"?, "label"?}, ...], requests, deadline_s=3300) -> {"results", "summary"}
 
 The record is exactly what `mlab.executors.base.MeasurementRecord` validates: one observation per request, memory
 peaks, a complete hardware/software identity and `source.kind == "measured"`, plus where the weights came from and how
@@ -13,11 +13,20 @@ distinct engine configuration, and replays each distinct workload on it once; de
 measurement under their own ids. A GPU session has a time limit, so a design is only started when the time left fits
 its estimated startup and replay; the rest come back `not_measured`, never half-measured.
 
+TRACES AND RESAMPLES. A design may name its workload as `"trace": {"text", "sha256", "resample"?}`, the exact JSONL
+text of the trace file and its `sha256:<hex>`, instead of `requests` rows. The text is hashed here and refused unless it
+matches, then parsed exactly as the simulator parses the same file (`mlab.backends.simulator_backend.request_bytes`), so
+a measurement and a simulation that report the same `trace_sha256` replayed the same bytes. A resampled workload (a
+fresh prompt mix that `mlab.core.workloads.write_resample` drew from the development trace, outside the sandbox) is a
+trace with `"resample": {"seed", "variant"}`; at most MAX_RESAMPLES distinct ones per GPU session, so a session's GPU
+time stays bounded. The record of a trace carries `trace_sha256` (and `resample_seed` / `resample_variant`).
+
 HONESTY RULE. A design is measured as designed or not at all. vLLM cannot reproduce some settings the exercises allow
 (non-continuous batching beyond one request, a KV fraction, speculative decoding, multi-GPU placement); those raise
 `Unsupported` naming the setting, so a student is never shown a measurement of something other than their choice.
 """
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -43,6 +52,8 @@ OUT_OF_TIME = "out of time in this GPU session"
 RO_CACHE_ENV, RO_CACHE_DEFAULT = "MLAB_HF_RO_CACHE", "/cache/hf"  # a read-only Hugging Face hub cache, if mounted
 OFFLINE_ENV = {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}  # served from the cache: no network at all
 VOCAB_LOW, VOCAB_HIGH = 1000, 100000  # token ids that exist in every Qwen3 tokenizer
+MAX_RESAMPLES = 2  # distinct resampled workloads per GPU session: each one is another replay on the card
+SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class Unsupported(Exception):
@@ -369,26 +380,67 @@ class OutOfTime(Exception):
     """The time left in this GPU session cannot fit the next step."""
 
 
+def trace_rows(trace):
+    """The workload rows of a trace given as its exact JSONL text, after checking the text against its sha256: the
+    bytes a simulation hashed are the bytes replayed here, or nothing is. Returns (rows, the record's trace fields)."""
+    if not isinstance(trace, dict) or not isinstance(trace.get("text"), str) \
+            or not SHA256_RE.match(str(trace.get("sha256") or "")):
+        raise ValueError("a trace is {\"text\": <the JSONL file text>, \"sha256\": \"sha256:<64 hex>\"}")
+    digest = "sha256:" + hashlib.sha256(trace["text"].encode("utf-8")).hexdigest()
+    if digest != trace["sha256"]:
+        raise ValueError(f"the trace text hashes to {digest}, not the {trace['sha256']} it was sent as")
+    try:  # parsed exactly as the simulator backend parses the file
+        rows = [json.loads(line) for line in trace["text"].splitlines() if line.strip()]
+    except ValueError:
+        raise ValueError("the trace text is not JSON lines") from None
+    if not rows or not all(isinstance(row, dict) for row in rows):
+        raise ValueError("a trace needs at least one request object per line")
+    fields = {"trace_sha256": digest}
+    resample = trace.get("resample")
+    if resample is not None:
+        if not (isinstance(resample, dict) and set(resample) == {"seed", "variant"} and type(resample["seed"]) is int
+                and resample["seed"] >= 0 and isinstance(resample["variant"], str) and resample["variant"]):
+            raise ValueError("a trace's resample is {\"seed\": <int >= 0>, \"variant\": <name>}")
+        fields.update(resample_seed=resample["seed"], resample_variant=resample["variant"])
+    return rows, fields
+
+
 def check_batch(designs, requests):
-    """Shape errors that make the whole batch unusable (ValueError), raised before anything is imported or started."""
+    """Shape errors that make the whole batch unusable (ValueError), raised before anything is imported or started.
+    Returns {design id: (rows, trace fields)}: each design's workload, its own trace or rows, else the batch's."""
     if not isinstance(designs, list) or not designs:
         raise ValueError("measure_many needs a nonempty list of designs")
-    seen = set()
+    workloads, resamples = {}, set()
     for design in designs:
         if not isinstance(design, dict) or not isinstance(design.get("id"), str) or not design["id"] \
                 or not isinstance(design.get("spec"), dict):
             raise ValueError("each design needs a nonempty string 'id' and a 'spec' object")
-        if design["id"] in seen:
+        if design["id"] in workloads:
             raise ValueError(f"design id {design['id']!r} appears twice")
-        seen.add(design["id"])
+        if "trace" in design:
+            if "requests" in design:
+                raise ValueError(f"design {design['id']!r} names both 'requests' and a 'trace'; send one")
+            try:
+                rows, fields = trace_rows(design["trace"])
+            except ValueError as error:
+                raise ValueError(f"design {design['id']!r}: {error}") from None
+            if "resample_seed" in fields:
+                resamples.add(fields["trace_sha256"])
+            workloads[design["id"]] = (rows, fields)
+            continue
         if not isinstance(design.get("requests", requests), list):
             raise ValueError(f"design {design['id']!r} has no 'requests' list (its own or the batch's)")
+        workloads[design["id"]] = (design.get("requests", requests), {})
+    if len(resamples) > MAX_RESAMPLES:
+        raise ValueError(f"at most {MAX_RESAMPLES} resampled workloads per GPU session (this batch has {len(resamples)})")
+    return workloads
 
 
 def measure_many(designs, requests=None, *, deadline_s=DEADLINE_S, label=None):
     """Measure a batch of designs in one GPU session.
 
     designs: [{"id": str, "spec": <RunSpec>, "requests": [...] (optional, else the batch's), "label": str (optional)}]
+      or with "trace": {"text", "sha256", "resample"?: {"seed", "variant"}} in place of "requests" (see TRACES)
     Returns {"results": [one per design, in order], "summary": {...}}; each result is one of
       {"id", "status": "measured", "record": <MeasurementRecord>, "shares_replay_with": [ids]}
       {"id", "status": "unsupported", "error": {"code": "E_UNSUPPORTED", "message"}}
@@ -402,7 +454,7 @@ def measure_many(designs, requests=None, *, deadline_s=DEADLINE_S, label=None):
     left fits the longest startup and replay seen so far in this batch (plus a download when one is needed)."""
     started = time.monotonic()
     end = math.inf if deadline_s is None else started + float(deadline_s)
-    check_batch(designs, requests)
+    inputs = check_batch(designs, requests)
     results, planned = {}, []
     for design in designs:  # refuse first: nothing below runs for a design the sandbox cannot reproduce
         try:
@@ -413,7 +465,7 @@ def measure_many(designs, requests=None, *, deadline_s=DEADLINE_S, label=None):
     # (model, revision) -> engine args -> workload -> [(design, engine, rows)], all in first-seen order
     groups: dict = {}
     for design, engine in planned:
-        rows = design.get("requests", requests)
+        rows = inputs[design["id"]][0]
         workload = json.dumps(rows, sort_keys=True, default=str)
         by_args = groups.setdefault((engine["model"], engine["revision"]), {})
         by_args.setdefault(tuple(engine["args"]), {}).setdefault(workload, []).append((design, engine, rows))
@@ -465,10 +517,13 @@ def measure_many(designs, requests=None, *, deadline_s=DEADLINE_S, label=None):
             pass
     for design in designs:
         results.setdefault(design["id"], {"id": design["id"], "status": "not_measured", "reason": OUT_OF_TIME})
+        if results[design["id"]]["status"] == "measured":
+            results[design["id"]]["record"].update(inputs[design["id"]][1])  # which trace it replayed
     total_s = round(time.monotonic() - started, 2)
     for record in records:
         record["timings"]["batch_total_s"] = total_s
     statuses = [results[design["id"]]["status"] for design in designs]
+    counts["resamples"] = len({fields["trace_sha256"] for _, fields in inputs.values() if "resample_seed" in fields})
     summary = {"total_s": total_s, "deadline_s": deadline_s, **{k: round(v, 2) for k, v in totals.items()}, **counts,
                **{status: statuses.count(status) for status in ("measured", "not_measured", "unsupported", "failed")}}
     return {"results": [results[design["id"]] for design in designs], "summary": summary}
@@ -555,9 +610,12 @@ def serve(workloads, path, env, weights_from, download_s, need, fail, seen, tota
 
 
 def measure(job):
-    """Run one design on this GPU. Returns a MeasurementRecord dict; raises Unsupported or RuntimeError."""
-    out = measure_many([{"id": "run", "spec": job["spec"], "label": job.get("label", "run")}], job["requests"],
-                       deadline_s=None)
+    """Run one design on this GPU. Returns a MeasurementRecord dict; raises Unsupported or RuntimeError.
+    The workload is job["requests"], or job["trace"] (see TRACES)."""
+    design = {"id": "run", "spec": job["spec"], "label": job.get("label", "run")}
+    if "trace" in job:
+        design["trace"] = job["trace"]
+    out = measure_many([design], job.get("requests"), deadline_s=None)
     result = out["results"][0]
     if result["status"] == "unsupported":
         raise Unsupported(result["error"]["message"])
@@ -569,7 +627,7 @@ def measure(job):
 def main():
     """`docker run -i --gpus all <sandbox image>`, a job on stdin and the answer on stdout:
 
-      {"spec", "requests", "label"}                          -> {"ok": true, "record"}       one design
+      {"spec", "requests" | "trace", "label"}                -> {"ok": true, "record"}       one design
       {"designs": [{"id", "spec", ...}], "requests", "label", "deadline_s"}
                                                              -> {"ok": true, "results", "summary"}   a batch
     Exit 2 with {"ok": false, "error": {...}} when the design cannot be measured (Unsupported) or the run failed; in a

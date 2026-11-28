@@ -520,3 +520,112 @@ def test_the_cli_runs_a_batch(gpu, monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["ok"] is True and [r["status"] for r in out["results"]] == ["measured", "unsupported"]
     assert out["summary"]["deadline_s"] == 3000
+
+
+# --- traces and resamples: the bytes the simulator scored are the bytes replayed --------------------------------------
+
+LONG_MIX_2 = {"seed": 2, "variant": "long_mix"}  # the simulated worst case of the 9.2 pick (0.6B, c16)
+RTX5080_PROFILE = "protocol-v1.21"  # the card the sandbox measures
+
+
+def lab_traces(task="9.2", resamples=(LONG_MIX_2,)):
+    """What the sandbox adapter's CPU prepare stage sends: the development trace and each resample as the exact text of
+    the file the simulator reads, with its frozen sha256. The resamples come from the code `evaluate` itself uses."""
+    from mlab.core.io import inside
+    from mlab.jobs import _exercise, _resample_requests, _resample_traces
+    with _exercise(task, RTX5080_PROFILE) as lab:
+        def text(reference):
+            return inside(lab.root / "task", reference["path"]).read_bytes().decode("utf-8")
+        development = lab.task["frozen"]["workload_requests"]
+        out = {"development": {"text": text(development), "sha256": development["sha256"]}}
+        for trace in _resample_traces(lab, _resample_requests({"task": task, "resamples": list(resamples)})):
+            out[trace["workload"]] = {"text": text(trace["reference"]), "sha256": trace["reference"]["sha256"],
+                                      "resample": {"seed": trace["seed"], "variant": trace["variant"]}}
+    return out
+
+
+def simulated_sha256(task="9.2", resamples=(LONG_MIX_2,)):
+    """The trace_sha256 the simulator's `evaluate` reports for each resample, for the 0.6B c16 pick."""
+    from mlab.jobs import run
+    pick = json.loads(run("templates", json.dumps({"task": task, "profile": RTX5080_PROFILE})))["templates"][0]
+    pick = {**pick, "id": "pick"}
+    pick["strategy"]["deployments"][0]["model"] = "llm-0.6b"
+    pick["strategy"]["serving"]["max_concurrency"] = 16
+    out = json.loads(run("evaluate", json.dumps({"task": task, "profile": RTX5080_PROFILE, "candidates": [pick],
+                                                 "seeds": [42], "workloads": [], "resamples": list(resamples)})))
+    assert all(row["status"] == "succeeded" for row in out["results"]), out["results"]
+    return {row["workload"]: row["trace_sha256"] for row in out["results"]}
+
+
+def test_a_resample_is_replayed_byte_for_byte_and_reports_the_simulators_trace_sha256(gpu, monkeypatch):
+    """The 9.2 worst case (0.6B, c16, long_mix:2) can only be confirmed on the card if the card replays the very
+    trace the simulator scored: same generator, same bytes, same sha256 on both sides."""
+    traces = lab_traces()
+    replayed = []
+    fake_replay = harness.replay
+
+    async def spy(port, model, requests, t0, deadline):
+        replayed.append(copy.deepcopy(requests))
+        return await fake_replay(port, model, requests, t0, deadline)
+
+    monkeypatch.setattr(harness, "replay", spy)
+    c16 = spec("llm-0.6b", max_concurrency=16)
+    out = harness.measure_many([{"id": name, "spec": c16, "trace": trace} for name, trace in traces.items()])
+    dev, resample = by_id(out)["development"]["record"], by_id(out)["resample:long_mix:2"]["record"]
+    assert resample["trace_sha256"] == simulated_sha256()["resample:long_mix:2"]
+    assert dev["trace_sha256"] == traces["development"]["sha256"]  # the frozen development trace's own hash
+    assert (resample["resample_seed"], resample["resample_variant"]) == (2, "long_mix")
+    assert "resample_seed" not in dev
+    # one server, two replays, each of exactly the rows in its text, parsed as the simulator backend parses them
+    assert len(gpu.servers) == 1 and len(replayed) == 2
+    for name, rows_sent in zip(traces, replayed):
+        assert rows_sent == [json.loads(line) for line in traces[name]["text"].splitlines() if line.strip()]
+    assert [r["arrival_ms"] for r in replayed[0]] == [r["arrival_ms"] for r in replayed[1]]  # arrivals kept
+    assert [r["input_tokens"] for r in replayed[0]] != [r["input_tokens"] for r in replayed[1]]  # prompts redrawn
+    for record in (dev, resample):
+        MeasurementRecord.model_validate(record)
+    assert out["summary"]["resamples"] == 1 and out["summary"]["measured"] == 2
+
+
+def test_a_trace_whose_text_does_not_match_its_sha256_is_refused_before_anything_runs(monkeypatch):
+    monkeypatch.setattr(harness, "runtime_versions", lambda: pytest.fail("imported the GPU stack"))
+    trace = dict(lab_traces()["resample:long_mix:2"])
+    trace["text"] = trace["text"].replace('"input_tokens": ', '"input_tokens": 1', 1)
+    with pytest.raises(ValueError, match="hashes to sha256:"):
+        harness.measure_many([{"id": "r", "spec": spec(), "trace": trace}])
+
+
+@pytest.mark.parametrize("trace, words", [
+    ({"text": "{}\n"}, "a trace is"),
+    ({"text": "{}\n", "sha256": "abc"}, "a trace is"),
+    ({"text": "", "sha256": "sha256:" + "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+     "at least one request"),
+])
+def test_a_malformed_trace_is_refused(trace, words):
+    with pytest.raises(ValueError, match=words):
+        harness.measure_many([{"id": "r", "spec": spec(), "trace": trace}])
+
+
+def test_a_design_names_requests_or_a_trace_not_both():
+    trace = lab_traces(resamples=())["development"]
+    with pytest.raises(ValueError, match="both 'requests' and a 'trace'"):
+        harness.measure_many([{"id": "r", "spec": spec(), "trace": trace, "requests": rows("r001")}])
+
+
+def test_at_most_two_resamples_per_gpu_session(gpu, monkeypatch):
+    three = lab_traces(resamples=(LONG_MIX_2, {"seed": 7, "variant": "long_mix"}, {"seed": 7, "variant": "short_mix"}))
+    designs = [{"id": name, "spec": spec(), "trace": trace} for name, trace in three.items()]
+    with pytest.raises(ValueError, match="at most 2 resampled workloads per GPU session"):
+        harness.measure_many(designs)
+    assert gpu.servers == [] and gpu.versions_calls == 0
+    # the same resample for two designs is one resampled workload
+    one = three["resample:long_mix:2"]
+    out = harness.measure_many([{"id": "a", "spec": spec(), "trace": one}, {"id": "b", "spec": spec(max_concurrency=8),
+                                                                          "trace": one}, *designs[:2]])
+    assert out["summary"]["resamples"] == 1 and out["summary"]["measured"] == 4
+
+
+def test_measure_takes_a_trace_too(gpu):
+    trace = lab_traces()["resample:long_mix:2"]
+    record = harness.measure({"spec": spec(), "trace": trace, "label": "c16-long_mix-2"})
+    assert record["trace_sha256"] == trace["sha256"] and record["resample_variant"] == "long_mix"

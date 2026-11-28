@@ -5,14 +5,25 @@
 #   docker run --rm -i --gpus all ghcr.io/mlsys-io/hello-mlsys-agent-sandbox:<tag> < job.json > record.json
 #   job.json: {"spec": {"strategy": <mlab Strategy>}, "requests": [<workload rows>], "label": "run-1"}
 #
-# The model weights (Qwen3 0.6B/1.7B/4B at pinned revisions) are downloaded from Hugging Face on first use, so the
-# container needs network access. A job runner may replace the entrypoint: `import vllm_harness` works from /opt/mlab.
+# The model weights of Qwen3 0.6B and 1.7B (the designs that can meet the 9.x limits on a 16 GiB card) are BAKED IN at
+# their pinned revisions as a read-only hub cache under /cache/hf (MLAB_HF_RO_CACHE): a GPU run starts vLLM without
+# downloading anything, and a worker that has pulled this image once pays no download again. Qwen3-4B (8 GB) is
+# downloaded from Hugging Face on first use, so the container still needs network access for it.
+# A job runner may replace the entrypoint: `import vllm_harness` works from /opt/mlab.
 # vLLM is pinned by digest (v0.34.0 and :latest were the same image when this was written).
 FROM vllm/vllm-openai:v0.34.0@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1
 
-ENV PYTHONUNBUFFERED=1 PYTHONPATH=/opt/mlab
+ENV PYTHONUNBUFFERED=1 PYTHONPATH=/opt/mlab MLAB_HF_RO_CACHE=/cache/hf
+# Weights first (their own layer): it changes only when a pinned revision does, not with the harness.
+RUN HF_HUB_DISABLE_TELEMETRY=1 python3 -c "from huggingface_hub import snapshot_download as d; \
+d('Qwen/Qwen3-0.6B', revision='c1899de289a04d12100db370d81485cdf75e47ca', cache_dir='/cache/hf'); \
+d('Qwen/Qwen3-1.7B', revision='70d244cc86ccca08cf5af4e1e306ecf908b1ad5e', cache_dir='/cache/hf')" \
+ && chmod -R a+rX /cache/hf
 COPY packages/lab/src/mlab/sandbox/vllm_harness.py /opt/mlab/vllm_harness.py
-RUN python3 -c "import vllm_harness, aiohttp, vllm; print('sandbox harness ok, vllm', vllm.__version__)"
+RUN python3 -c "import vllm_harness as h, aiohttp, vllm; \
+assert h.cached_snapshot('Qwen/Qwen3-0.6B', h.REVISIONS['Qwen/Qwen3-0.6B']), 'baked 0.6B incomplete'; \
+assert h.cached_snapshot('Qwen/Qwen3-1.7B', h.REVISIONS['Qwen/Qwen3-1.7B']), 'baked 1.7B incomplete'; \
+print('sandbox harness ok, vllm', vllm.__version__, '- weights baked: 0.6B, 1.7B')"
 
 LABEL org.opencontainers.image.source="https://github.com/mlsys-io/hello-mlsys-agent" \
       org.opencontainers.image.licenses="MIT" \
